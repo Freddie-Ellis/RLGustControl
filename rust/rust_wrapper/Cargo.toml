@@ -1,0 +1,12 @@
+[package]
+name = "rust_wrapper"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "rust_wrapper"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+rust_logic = { path = "../rust_logic" }
+pyo3 = { version = "0.29", features = ["extension-module"] }

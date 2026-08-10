@@ -1,0 +1,23 @@
+# Rust build artifacts — this is the big one, can be hundreds of MB
+/target
+/*/target
+Cargo.lock
+
+# Python virtual environment
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Build artifacts from maturin
+*.whl
+/rust_wrapper/target
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json

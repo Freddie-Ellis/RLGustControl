@@ -31,21 +31,10 @@ if [ -z "$UV_CMD" ]; then
 	exit 1
 fi
 
+echo "Make sure you have the rust stuff .whl, ask Freddie for this if you don't have it."
+
 echo "Running: $UV_CMD sync"
 "$UV_CMD" sync
-
-# If PY_CMD not set from .venv, fall back to system python
-if [ -z "$PY_CMD" ]; then
-	PY_CMD="$(command -v python3 || command -v python || true)"
-fi
-
-if [ -z "$PY_CMD" ]; then
-	echo "Error: python not found in PATH and .venv not present." >&2
-	exit 1
-fi
-
-echo "Building Rust wheel with $PY_CMD build_rust_wheel.py"
-"$PY_CMD" build_rust_wheel.py
 
 echo "Done."
 

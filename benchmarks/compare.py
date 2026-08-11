@@ -11,7 +11,6 @@ def step_py(x: float, v: float, action: float):
     x_new = x + v_new * 0.01
     return x_new, v_new
 
-
 def bench_py(iters: int) -> tuple[float, float, float, list[tuple[float, float]]]:
     x = 0.0
     v = 0.0
@@ -23,7 +22,6 @@ def bench_py(iters: int) -> tuple[float, float, float, list[tuple[float, float]]
         his.append((x, v))
     elapsed = time.perf_counter() - start
     return elapsed, x, v, his
-
 
 def bench_rust(iters: int) -> tuple[float, float, float, list[tuple[float, float]]]:
     # If rust_wrapper exposes a bench_iter that runs the loop inside Rust, use it

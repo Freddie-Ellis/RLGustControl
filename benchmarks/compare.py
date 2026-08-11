@@ -2,7 +2,7 @@ import time
 
 import matplotlib.pyplot as plt
 
-import rust_wrapper
+import ruststuff
 
 
 def step_py(x: float, v: float, action: float):
@@ -24,10 +24,10 @@ def bench_py(iters: int) -> tuple[float, float, float, list[tuple[float, float]]
     return elapsed, x, v, his
 
 def bench_rust(iters: int) -> tuple[float, float, float, list[tuple[float, float]]]:
-    # If rust_wrapper exposes a bench_iter that runs the loop inside Rust, use it
-    secs, x, v, his = rust_wrapper.bench_iter(iters)
+    # If ruststuff exposes a bench_iter that runs the loop inside Rust, use it
+    secs, x, v, his = ruststuff.bench_iter(iters)
     return secs, x, v, his
-
+    
 def main() -> None:
     iters = 20000000  # 20 million iterations
     print(f"Running benchmark with {iters} iterations...")

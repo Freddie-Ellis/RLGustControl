@@ -1,6 +1,16 @@
 pub mod step;
 pub mod bench_iters;
 
+use pyo3::prelude::*;
+
+#[pymodule]
+fn ruststuff(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(step::step, m)?)?;
+    m.add_function(wrap_pyfunction!(bench_iters::bench_iter, m)?)?;
+    Ok(())
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,6 +1,8 @@
+use pyo3::prelude::*;
 use crate::step::step;
 
 /// Run `step` for `iters` iterations and return (elapsed_seconds, final_x, final_v, history).
+#[pyfunction]
 pub fn bench_iter(iters: usize) -> (f64, f64, f64, Vec<(f64, f64)>) {
     use std::time::Instant;
     let mut x: f64 = 0.0;

@@ -6,3 +6,6 @@ edition = "2021"
 [lib]
 name = "rust_logic"
 crate-type = ["rlib"]
+
+[dependencies]
+plotters = "0.3"

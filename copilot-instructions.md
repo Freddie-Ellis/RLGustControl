@@ -1,2 +1,0 @@
-# PlaceHolder copilot-instructions.md
-

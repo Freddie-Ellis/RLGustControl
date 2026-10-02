@@ -8,6 +8,7 @@ dependencies = [
     "matplotlib>=3.11.1",
     "maturin>=1.14.1",
     "pydantic>=2.13.5",
+    "pyqtgraph>=0.14.0",
     "pyside6>=6.11.2",
     "qtpy>=2.4.3",
     "ruststuff",

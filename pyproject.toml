@@ -1,7 +1,7 @@
 [project]
 name = "gdp"
 version = "0.1.0"
-description = "Add your description here"
+description = "Fourth year GDP project for online RL control of a delta type wing"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [

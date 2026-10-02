@@ -7,7 +7,12 @@ requires-python = ">=3.14"
 dependencies = [
     "matplotlib>=3.11.1",
     "maturin>=1.14.1",
+    "pydantic>=2.13.5",
+    "pyside6>=6.11.2",
+    "qtpy>=2.4.3",
     "ruststuff",
+    "snakeviz>=2.2.2",
+    "torch>=2.14.1",
 ]
 
 [tool.uv.sources]

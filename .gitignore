@@ -12,6 +12,9 @@ __pycache__/
 # Build artifacts from maturin
 /ruststuff/target
 
+# Ignore Data
+/data/*
+
 # OS junk
 .DS_Store
 Thumbs.db

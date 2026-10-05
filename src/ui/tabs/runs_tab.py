@@ -22,6 +22,7 @@ from qtpy.QtWidgets import (
 
 from src.ml.runs import RunSummary, list_runs
 from src.ui.plotting import series_pen
+from src.ui.utils.dynamic_vb import DynamicViewBox
 
 COLUMNS = ["Run", "Status", "Env", "Policy", "Algo", "Iters", "Final return"]
 
@@ -61,9 +62,10 @@ class RunsTab(QWidget):
         left_layout.addWidget(self.table)
 
         # --- right: training curves + config ---
-        self.metric = QComboBox()
-        self.metric.currentTextChanged.connect(lambda _: self._plot())
-        self.plot = pg.PlotWidget()
+        self.metric_combo = QComboBox()
+        self.metric_combo.currentTextChanged.connect(lambda _: self._plot())
+        self.plot = pg.PlotWidget(viewBox=DynamicViewBox())
+        self.plot_vb = self.plot.getViewBox()
         self.plot.addLegend()
         self.plot.setLabel("bottom", "iteration")
         self.plot.showGrid(x=True, y=True, alpha=0.3)
@@ -74,7 +76,7 @@ class RunsTab(QWidget):
 
         metric_row = QHBoxLayout()
         metric_row.addWidget(QLabel("Metric"))
-        metric_row.addWidget(self.metric, 1)
+        metric_row.addWidget(self.metric_combo, 1)
 
         right_split = QSplitter(Qt.Orientation.Vertical)
         curves = QWidget()
@@ -141,20 +143,20 @@ class RunsTab(QWidget):
         for s in sel:
             cols = set(s.run.read_metrics().columns) - {"iteration"}
             columns = cols if columns is None else columns & cols
-        current = self.metric.currentText()
-        self.metric.blockSignals(True)
-        self.metric.clear()
-        self.metric.addItems(sorted(columns or []))
+        current = self.metric_combo.currentText()
+        self.metric_combo.blockSignals(True)
+        self.metric_combo.clear()
+        self.metric_combo.addItems(sorted(columns or []))
         if current in (columns or set()):
-            self.metric.setCurrentText(current)
+            self.metric_combo.setCurrentText(current)
         elif "train_return" in (columns or set()):
-            self.metric.setCurrentText("train_return")
-        self.metric.blockSignals(False)
+            self.metric_combo.setCurrentText("train_return")
+        self.metric_combo.blockSignals(False)
         self._plot()
 
     def _plot(self) -> None:
         self.plot.clear()
-        metric = self.metric.currentText()
+        metric = self.metric_combo.currentText()
         if not metric:
             return
         self.plot.setLabel("left", metric)
@@ -162,7 +164,8 @@ class RunsTab(QWidget):
             df = s.run.read_metrics()
             if metric in df.columns:
                 self.plot.plot(df["iteration"].to_numpy(), df[metric].to_numpy(), pen=series_pen(i), name=s.run.name)
-
+        self.plot_vb.autoRange() # AutoRange after plotting
+    
     def _tick(self) -> None:
         if self.isVisible() and any(s.status.state == "running" for s in self._selected()):
             self._plot()

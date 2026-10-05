@@ -1,6 +1,6 @@
 # Rust build artifacts — this is the big one, can be hundreds of MB
 /target
-/*/target
+/*/target/*
 Cargo.lock
 
 # Python virtual environment
@@ -10,7 +10,8 @@ __pycache__/
 *.pyo
 
 # Build artifacts from maturin
-/ruststuff/target
+/ruststuff/target/*
+!/ruststuff/target/wheels/
 
 # Ignore Data
 /data/*

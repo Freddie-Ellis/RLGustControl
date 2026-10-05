@@ -1,0 +1,24 @@
+# PPO + Gaussian MLP on the dummy gust-lift env. Omitted keys use the defaults in src/ml/run_config.py.
+name = "ppo_gust_dummy"
+seed = 1
+
+[env]
+kind = "gust_lift_dummy"
+
+[env.spec]
+dt = 0.01
+horizon = 100
+
+[env.params]
+cl_ref = 0.5
+action_cost = 0.01
+
+[policy]
+kind = "gaussian_mlp"
+hidden = 64
+
+[algo]
+kind = "ppo"
+iterations = 60
+n_envs = 64
+lr = 3e-4

@@ -1,15 +1,17 @@
 import math
 
 import torch
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from torch import Tensor
 
 from src.config import CONFIG
-from src.ml.envs.base import Env, EnvSpec
+from src.ml.envs.base import Env, EnvSpec, Trace
 
 
 class GustLiftParams(BaseModel):
     """Physics and reward parameters specific to the dummy gust-lift environment."""
+    model_config = ConfigDict(extra="forbid")
+
     tau: float = 0.3
     slope: float = 1.0
     cl_ref: float = 0.5
@@ -20,6 +22,9 @@ class GustLiftParams(BaseModel):
 
 class GustLiftDummyEnv(Env):
     """A dummy environment for testing purposes."""
+
+    obs_dim = 3  # [cl error, scaled cl rate, previous action]
+    act_dim = 1
 
     def __init__(self, spec: EnvSpec, params: GustLiftParams, n_envs: int, seed: int | None = None) -> None:
         super().__init__(spec, n_envs, seed)
@@ -63,4 +68,11 @@ class GustLiftDummyEnv(Env):
         err = self.cl - self.params.cl_ref
         reward = -(err**2) - self.params.action_cost * u**2
         return self._obs(cl_dot), reward
+
+    def trace_metrics(self, trace: Trace) -> dict[str, float]:
+        err = trace.extras["cl"] - self.params.cl_ref
+        return {"cl_err_rms": float(err.pow(2).mean().sqrt()), "cl_err_peak": float(err.abs().max())}
+
+    def _extras(self) -> dict[str, Tensor]:
+        return {"cl": self.cl, "cl_ref": torch.full_like(self.cl, self.params.cl_ref), "gust": self._gust()}
 

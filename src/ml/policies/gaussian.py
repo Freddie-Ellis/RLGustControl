@@ -2,7 +2,6 @@ import torch
 from torch import Tensor, nn
 from torch.distributions import Normal
 
-from src.config import CONFIG
 from src.ml.policies.base import Policy
 
 
@@ -13,10 +12,6 @@ def mlp(sizes: list[int]) -> nn.Sequential:
         if i < len(sizes) - 2:
             layers.append(nn.Tanh())  # tanh is the RL default; ReLU also fine
     return nn.Sequential(*layers)
-
-
-OBS_DIM = CONFIG.obs_dim
-ACT_DIM = CONFIG.act_dim
 
 
 class GaussianPolicy(Policy):
@@ -30,10 +25,10 @@ class GaussianPolicy(Policy):
     large (lots of exploration) and training shrinks it as the policy becomes confident.
     """
 
-    def __init__(self, hidden: int = 64) -> None:
-        super().__init__(OBS_DIM, ACT_DIM)
-        self.mean_net = mlp([OBS_DIM, hidden, hidden, ACT_DIM])
-        self.log_std = nn.Parameter(torch.full((ACT_DIM,), -0.5))
+    def __init__(self, obs_dim: int, act_dim: int, hidden: int = 64, init_log_std: float = -0.5) -> None:
+        super().__init__(obs_dim, act_dim)
+        self.mean_net = mlp([obs_dim, hidden, hidden, act_dim])
+        self.log_std = nn.Parameter(torch.full((act_dim,), init_log_std))
 
     def dist(self, obs: Tensor) -> Normal:
         return Normal(self.mean_net(obs), self.log_std.exp())

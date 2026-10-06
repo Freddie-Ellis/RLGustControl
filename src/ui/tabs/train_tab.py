@@ -41,8 +41,7 @@ class TrainTab(QWidget):
 
         # --- config editor ---
         self.template_combo = QComboBox()
-        load_btn = QPushButton("Load")
-        load_btn.clicked.connect(self._load_template)
+        self.template_combo.currentIndexChanged.connect(self._load_template)
         refresh_btn = QPushButton("↻")
         refresh_btn.setFixedWidth(30)
         refresh_btn.clicked.connect(self.refresh_templates)
@@ -50,7 +49,6 @@ class TrainTab(QWidget):
         template_row.addWidget(QLabel("Config"))
         template_row.addWidget(self.template_combo, 1)
         template_row.addWidget(refresh_btn)
-        template_row.addWidget(load_btn)
 
         self.editor = QPlainTextEdit()
         self.editor.setFont(MONO)
@@ -119,11 +117,13 @@ class TrainTab(QWidget):
     # ----- public -----
     def refresh_templates(self) -> None:
         current = self.template_combo.currentText()
+        self.template_combo.blockSignals(True)
         self.template_combo.clear()
         for p in sorted(CONFIG.configs_dir.glob("*.toml")):
             self.template_combo.addItem(p.name, p)
         if current:
             self.template_combo.setCurrentText(current)
+        self.template_combo.blockSignals(False)
 
     def load_from_run(self, run_path: Path) -> None:
         """Fill the editor with an existing run's config (from the Runs tab's 'Use as template')."""

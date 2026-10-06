@@ -8,12 +8,13 @@ env/policy/algo, write its config model and turn the alias below into a tagged u
 import json
 import tomllib
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from src.ml.envs.base import EnvSpec
 from src.ml.envs.gust_lift_dummy import GustLiftParams
+from src.ml.envs.xfoil_pitch import XFOILPitchProblemParams
 
 
 class StrictModel(BaseModel):
@@ -28,7 +29,13 @@ class GustLiftEnvConfig(StrictModel):
     params: GustLiftParams = GustLiftParams()
 
 
-type EnvConfig = GustLiftEnvConfig
+class XFOILPitchEnvConfig(StrictModel):
+    kind: Literal["xfoil_pitch"] = "xfoil_pitch"
+    spec: EnvSpec = EnvSpec()
+    params: XFOILPitchProblemParams = XFOILPitchProblemParams()
+
+
+type EnvConfig = Annotated[GustLiftEnvConfig | XFOILPitchEnvConfig, Field(discriminator="kind")]
 
 
 # ----- policies -----

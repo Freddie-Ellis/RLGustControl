@@ -18,4 +18,7 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-ruststuff = { path = "ruststuff/target/wheels/ruststuff-0.1.0-cp314-cp314-win_amd64.whl" }
+ruststuff = [
+  { path = "ruststuff/target/wheels/ruststuff-0.1.0-cp314-cp314-win_amd64.whl", marker = "sys_platform == 'win32'" },
+  { path = "ruststuff/target/wheels/ruststuff-0.1.0-cp314-cp314-manylinux_2_28_x86_64", marker = "sys_platform == 'linux'" },
+]

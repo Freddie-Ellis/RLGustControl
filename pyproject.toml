@@ -17,6 +17,12 @@ dependencies = [
     "torch>=2.14.1",
 ]
 
+[tool.uv]
+environments = [
+    "sys_platform == 'win32'",
+    "sys_platform == 'linux'",
+]
+
 [tool.uv.sources]
 ruststuff = [
   { path = "ruststuff/target/wheels/ruststuff-0.1.0-cp314-cp314-win_amd64.whl", marker = "sys_platform == 'win32'" },

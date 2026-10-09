@@ -108,9 +108,9 @@ class SAC(Algorithm[SACPolicy]):
 
         # 2. Actor: propose fresh actions for the stored states and move uphill on the critic. Gradients flow
         #    Q -> a -> rsample -> actor weights. Only actor_opt steps, so the critic is used here but not changed.
-        act, logp = self.policy.rsample(batch.obs)
+        act, logp = self.policy.rsample(batch.obs) # Points to the actors weights via the reparameterisation trick, so gradients flow from the critic into the actor
         actor_loss = (self.alpha * logp - self.critic.min_q(batch.obs, act)).mean()
-        self.actor_opt.zero_grad()
+        self.actor_opt.zero_grad() # Actor optimiser points to the actors weights via its creation
         actor_loss.backward()
         self.actor_opt.step()
 

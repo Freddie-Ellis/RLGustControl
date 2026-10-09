@@ -1,10 +1,10 @@
 #!/bin/bash
-# OpenFOAM smoke test on Iridis 6: copies the airFoil2D tutorial, decomposes it,
-# runs simpleFoam in parallel with MPI and reconstructs the result.
+# OpenFOAM smoke test on Iridis 6: copies the pitzDaily tutorial, meshes and
+# decomposes it, runs simpleFoam in parallel with MPI and reconstructs the result.
 #
-# Submit from the repo root:   sbatch hpc/openfoam_test.slurm
-# Output log:                  of_test_<jobid>.out
-# Case directory:              hpc/runs/of_test_<jobid>/
+# Submit from anywhere in the repo:   sbatch hpc/openfoam_test.slurm
+# Output log:                         of_test_<jobid>.out (in the submit directory)
+# Case directory:                     <repo>/hpc/runs/of_test_<jobid>/
 
 #SBATCH --job-name=of_test
 #SBATCH --nodes=1
@@ -39,18 +39,25 @@ run_step() {
     echo "--- ${name}"
     if ! "$@" > "log.${name}" 2>&1; then
         echo "FAILED: ${name}"
-        tail -n 30 "log.${name}"
+        tail -n 40 "log.${name}"
         exit 1
     fi
 }
 
 echo
 echo "=== Case setup ==="
-case_dir="${SLURM_SUBMIT_DIR}/hpc/runs/of_test_${SLURM_JOB_ID}"
+# Resolve the repo root so the job works whichever directory it was submitted from.
+repo_root="$(git -C "${SLURM_SUBMIT_DIR}" rev-parse --show-toplevel 2>/dev/null || echo "${SLURM_SUBMIT_DIR}")"
+case_dir="${repo_root}/hpc/runs/of_test_${SLURM_JOB_ID}"
 mkdir -p "$(dirname "${case_dir}")"
-cp -r "${FOAM_TUTORIALS}/incompressible/simpleFoam/airFoil2D" "${case_dir}"
+cp -r "${FOAM_TUTORIALS}/incompressible/simpleFoam/pitzDaily" "${case_dir}"
 cd "${case_dir}"
 echo "Case dir:      ${case_dir}"
+# Newer tutorials keep initial conditions in 0.orig and copy them to 0 at run time.
+if [ -d 0.orig ] && [ ! -d 0 ]; then
+    cp -r 0.orig 0
+fi
+echo "Contents:      $(ls -m)"
 
 foamDictionary -entry endTime -set "${N_ITER}" system/controlDict > /dev/null
 foamDictionary -entry writeInterval -set "${N_ITER}" system/controlDict > /dev/null

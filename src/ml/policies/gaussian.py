@@ -2,7 +2,7 @@ import torch
 from torch import Tensor, nn
 from torch.distributions import Normal
 
-from src.ml.policies.base import Policy
+from src.ml.policies.base import PPOPolicy
 
 
 def mlp(sizes: list[int]) -> nn.Sequential:
@@ -14,7 +14,7 @@ def mlp(sizes: list[int]) -> nn.Sequential:
     return nn.Sequential(*layers)
 
 
-class GaussianPolicy(Policy):
+class GaussianPolicy(PPOPolicy):
     """pi_theta(a | s) = Normal(mean_theta(s), std).
 
     For CONTINUOUS actions the network outputs the parameters of a distribution and we sample.

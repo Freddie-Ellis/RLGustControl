@@ -7,7 +7,7 @@ from torch import Tensor, nn
 
 from src.ml.algos.base import Algorithm, Callback
 from src.ml.envs.base import Env
-from src.ml.policies.base import Policy
+from src.ml.policies.base import PPOPolicy
 from src.ml.policies.gaussian import mlp
 from src.ml.run_config import PPOConfig
 
@@ -33,7 +33,7 @@ class Rollout:
     last_obs: Tensor  # [N, obs]  state after the final step, used to bootstrap the value
 
 
-def collect(env: Env, policy: Policy) -> Rollout:
+def collect(env: Env, policy: PPOPolicy) -> Rollout:
     """Run one full episode in every parallel env with the current (stochastic) policy."""
     obs = env.reset()
     obs_l: list[Tensor] = []
@@ -67,11 +67,11 @@ def compute_gae(rew: Tensor, values: Tensor, last_value: Tensor, gamma: float, l
     return adv, adv + values
 
 
-class PPO(Algorithm):
+class PPO(Algorithm[PPOPolicy]):
     def __init__(self, cfg: PPOConfig) -> None:
         self.cfg = cfg
 
-    def train(self, env: Env, policy: Policy, callback: Callback | None = None) -> None:
+    def train(self, env: Env, policy: PPOPolicy, callback: Callback | None = None) -> None:
         c = self.cfg
         critic = ValueNet(env.obs_dim)
         params = [*policy.parameters(), *critic.parameters()]

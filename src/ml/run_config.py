@@ -10,7 +10,7 @@ import tomllib
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from src.ml.envs.base import EnvSpec
 from src.ml.envs.gust_lift_dummy import GustLiftParams
@@ -45,7 +45,13 @@ class GaussianMLPConfig(StrictModel):
     init_log_std: float = -0.5
 
 
-type PolicyConfig = GaussianMLPConfig
+class SquashedGaussianConfig(StrictModel):
+    kind: Literal["squashed_gaussian"] = "squashed_gaussian"
+    hidden: int = 256
+    init_log_std: float = -0.5
+
+
+type PolicyConfig = Annotated[GaussianMLPConfig | SquashedGaussianConfig, Field(discriminator="kind")]
 
 
 # ----- algorithms -----
@@ -66,6 +72,12 @@ class PPOConfig(StrictModel):
 
 type AlgoConfig = PPOConfig
 
+# Which policy kinds each algorithm can train (mirrors PPOPolicy / SACPolicy in policies/base.py).
+COMPATIBLE_POLICIES: dict[str, set[str]] = {
+    "ppo": {"gaussian_mlp"},
+    "sac": {"squashed_gaussian"},
+}
+
 
 # ----- run -----
 class RunConfig(StrictModel):
@@ -74,6 +86,16 @@ class RunConfig(StrictModel):
     env: EnvConfig = GustLiftEnvConfig()
     policy: PolicyConfig = GaussianMLPConfig()
     algo: AlgoConfig = PPOConfig()
+
+    @model_validator(mode="after")
+    def _check_policy_suits_algo(self) -> RunConfig:
+        """Fail when the config is loaded, not after the tunnel is spun up and the first update crashes."""
+        allowed = COMPATIBLE_POLICIES[self.algo.kind]
+        if self.policy.kind not in allowed:
+            raise ValueError(
+                f"algo {self.algo.kind!r} cannot train policy {self.policy.kind!r}; use one of {sorted(allowed)}"
+            )
+        return self
 
     @classmethod
     def from_toml(cls, path: Path) -> RunConfig:

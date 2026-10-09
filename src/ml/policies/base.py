@@ -9,8 +9,9 @@ from torch import Tensor, nn
 class Policy(nn.Module, ABC):
     """Base class for all stochastic policies pi(a | s).
 
-    Subclasses define how an observation becomes an action distribution. Everything else
-    (trainers, evaluation, plotting) only relies on the methods declared here.
+    Only what is needed to *run* a policy: acting, and saving/loading weights. This is all the tunnel actor,
+    `Env.run` and evaluation use, so the deployed side never depends on how the policy was trained.
+    What each algorithm needs on top lives in `PPOPolicy` and `SACPolicy` below.
     """
 
     def __init__(self, obs_dim: int, act_dim: int) -> None:
@@ -27,11 +28,6 @@ class Policy(nn.Module, ABC):
         """
         raise NotImplementedError("Subclasses must implement act.")
 
-    @abstractmethod
-    def log_prob_entropy(self, obs: Tensor, act: Tensor) -> tuple[Tensor, Tensor]:
-        """Re-evaluate `act` under the current weights WITH gradient. Returns (log_prob, entropy), each [N]."""
-        raise NotImplementedError("Subclasses must implement log_prob_entropy.")
-    
     def as_act_fn(self, deterministic: bool = True) -> Callable[[Tensor], Tensor]:
         """Wrap the policy as `obs -> action`, the form `Env.run` and other controllers use."""
         return lambda obs: self.act(obs, deterministic)[0]
@@ -45,3 +41,21 @@ class Policy(nn.Module, ABC):
         """Load weights saved by `save` into this (already constructed) policy."""
         self.load_state_dict(torch.load(path))
         self.eval()
+
+
+class PPOPolicy(Policy):
+    """A policy PPO can train: on-policy, so it re-scores the actions it collected under updated weights."""
+
+    @abstractmethod
+    def log_prob_entropy(self, obs: Tensor, act: Tensor) -> tuple[Tensor, Tensor]:
+        """Re-evaluate `act` under the current weights WITH gradient. Returns (log_prob, entropy), each [N]."""
+        raise NotImplementedError("Subclasses must implement log_prob_entropy.")
+
+
+class SACPolicy(Policy):
+    """A policy SAC can train: actions must be differentiable w.r.t. the weights so the critic's gradient reaches them."""
+
+    @abstractmethod
+    def rsample(self, obs: Tensor) -> tuple[Tensor, Tensor]:
+        """Reparameterised sample WITH gradient. Returns (action [N, act_dim], log_prob [N])."""
+        raise NotImplementedError("Subclasses must implement rsample.")

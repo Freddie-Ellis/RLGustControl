@@ -1,0 +1,40 @@
+name = "sac_dummy"
+seed = 0
+
+[env]
+kind = "gust_lift_dummy"
+
+[env.spec]
+dt = 0.01
+horizon = 100
+
+[env.params]
+tau = 0.3
+slope = 1.0
+cl_ref = 0.5
+gust_len = 1.0
+act_limit = 1.0  # the squashed policy outputs (-1, 1)
+action_cost = 0.01
+
+[policy]
+kind = "squashed_gaussian"
+hidden = 256
+init_log_std = -0.5
+
+[algo]
+kind = "sac"
+iterations = 40
+n_envs = 16
+gamma = 0.99
+tau = 0.005
+batch_size = 256
+buffer_size = 1000000
+warmup_transitions = 5000
+updates_per_step = 1
+actor_lr = 0.0003
+critic_lr = 0.0003
+alpha_lr = 0.0003
+init_alpha = 0.1
+critic_hidden = 256
+critic_dropout = 0.0
+critic_layer_norm = true

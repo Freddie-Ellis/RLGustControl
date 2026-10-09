@@ -4,6 +4,7 @@ from typing import Any
 
 from src.ml.algos.base import Algorithm
 from src.ml.algos.ppo import PPO
+from src.ml.algos.sac import SAC
 from src.ml.envs.base import Env
 from src.ml.envs.gust_lift_dummy import GustLiftDummyEnv
 from src.ml.envs.xfoil_pitch import XFOILPitchProblemEnv
@@ -33,3 +34,5 @@ def build_algo(cfg: AlgoConfig) -> Algorithm[Any]:
     match cfg.kind:
         case "ppo":
             return PPO(cfg)
+        case "sac":
+            return SAC(cfg)

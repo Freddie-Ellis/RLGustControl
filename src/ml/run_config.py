@@ -55,10 +55,14 @@ type PolicyConfig = Annotated[GaussianMLPConfig | SquashedGaussianConfig, Field(
 
 
 # ----- algorithms -----
-class PPOConfig(StrictModel):
+class AlgoConfigBase(StrictModel):
+    """Fields every algorithm has. `train.py` and the UI only rely on these, so they work for any algorithm."""
+    iterations: int = 60  # one iteration = one episode in every parallel env, then a metrics row
+    n_envs: int = 64  # parallel sim envs (always 1 in the tunnel)
+
+
+class PPOConfig(AlgoConfigBase):
     kind: Literal["ppo"] = "ppo"
-    iterations: int = 60
-    n_envs: int = 64
     gamma: float = 0.98
     lam: float = 0.95
     clip: float = 0.2
@@ -70,7 +74,27 @@ class PPOConfig(StrictModel):
     max_grad_norm: float = 0.5
 
 
-type AlgoConfig = PPOConfig
+class SACConfig(AlgoConfigBase):
+    kind: Literal["sac"] = "sac"
+    iterations: int = 100
+    n_envs: int = 16
+    gamma: float = 0.99  # discount; horizon of ~1 / (1 - gamma) = 100 control steps
+    tau: float = 0.005  # target critic Polyak rate
+    batch_size: int = 256
+    buffer_size: int = 1_000_000
+    warmup_transitions: int = 5_000  # uniform random actions before the policy takes over, let the critic see the whole action range -- TODO: High enough for 12 inputs?
+    updates_per_step: int = 1  # gradient steps per env step; raise for scarce tunnel data (with critic dropout)
+    actor_lr: float = 3e-4
+    critic_lr: float = 3e-4
+    alpha_lr: float = 3e-4
+    init_alpha: float = 0.1  # entropy weight at the start
+    target_entropy: float | None = None  # None -> -act_dim
+    critic_hidden: int = 256
+    critic_dropout: float = 0.0  # DroQ uses ~0.01 with updates_per_step ~ 20
+    critic_layer_norm: bool = True
+
+
+type AlgoConfig = Annotated[PPOConfig | SACConfig, Field(discriminator="kind")]
 
 # Which policy kinds each algorithm can train (mirrors PPOPolicy / SACPolicy in policies/base.py).
 COMPATIBLE_POLICIES: dict[str, set[str]] = {

@@ -1,0 +1,284 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#faf9f5;color:#141413}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>Tunnel RL System</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@600&display=swap">
+<style>
+/* Layout: one wide schematic in a scroll box, framed by a short header and two plain notes. */
+:root {
+  --bg: #f3f5f6;
+  --zone: #e8ecee;
+  --surface: #ffffff;
+  --fg: #1a2228;
+  --muted: #5f6d77;
+  --line: #c3ccd2;
+  --accent: #0b7480;   /* real-time control loop */
+  --accent-soft: rgba(11, 116, 128, 0.07);
+  --font-display: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
+  --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #11161a; --zone: #171e23; --surface: #1d252b; --fg: #e2e8eb; --muted: #8e9ba5;
+    --line: #34424c; --accent: #40c3cc; --accent-soft: rgba(64, 195, 204, 0.08); color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #11161a; --zone: #171e23; --surface: #1d252b; --fg: #e2e8eb; --muted: #8e9ba5;
+  --line: #34424c; --accent: #40c3cc; --accent-soft: rgba(64, 195, 204, 0.08); color-scheme: dark;
+}
+
+body { background: var(--bg); color: var(--fg); font-family: var(--font-body); font-size: 15px; line-height: 1.55; }
+.wrap { max-width: 1240px; margin: 0 auto; padding: 32px 20px 48px; display: grid; gap: 28px; }
+header { display: grid; gap: 6px; max-width: 70ch; }
+.eyebrow { font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.06em; color: var(--muted); text-transform: uppercase; }
+h1 { font-family: var(--font-display); font-weight: 600; font-size: clamp(28px, 4vw, 40px); line-height: 1.1; margin: 0; text-wrap: balance; letter-spacing: -0.01em; }
+header p { margin: 0; color: var(--muted); }
+
+figure { margin: 0; display: grid; gap: 14px; }
+.scroll { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; }
+.scroll svg { display: block; width: 100%; min-width: 980px; height: auto; }
+figcaption { color: var(--muted); font-size: 14px; max-width: 80ch; }
+
+.legend { display: flex; flex-wrap: wrap; gap: 10px 28px; font-size: 13px; color: var(--muted); }
+.legend span { display: inline-flex; align-items: center; gap: 8px; }
+.legend svg { width: 40px; height: 10px; }
+
+.notes { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 24px 40px; }
+.notes section { min-width: 0; }
+.notes h2 { font-family: var(--font-display); font-weight: 600; font-size: 18px; margin: 0 0 6px; }
+.notes p, .notes ul { margin: 0; max-width: 62ch; }
+.notes ul { padding-left: 18px; display: grid; gap: 4px; }
+code { font-family: var(--font-mono); font-size: 0.9em; }
+
+/* SVG styling from page tokens */
+.zone { fill: var(--zone); stroke: none; }
+.box { fill: var(--surface); stroke: var(--line); stroke-width: 1.2; }
+.folder { fill: var(--bg); stroke: var(--line); stroke-width: 1.2; stroke-dasharray: 4 3; }
+.hot { stroke: var(--accent); stroke-width: 1.6; }
+.share { fill: none; stroke: var(--muted); stroke-width: 1; stroke-dasharray: 2 3; }
+.loop { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.2; stroke-dasharray: 6 4; }
+.zt { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.06em; fill: var(--muted); font-weight: 500; }
+.lt { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.05em; fill: var(--accent); font-weight: 500; }
+.t { font-family: var(--font-body); font-size: 12.5px; font-weight: 600; fill: var(--fg); }
+.s { font-family: var(--font-body); font-size: 11px; fill: var(--muted); }
+.m { font-family: var(--font-mono); font-size: 11px; fill: var(--fg); }
+.al { font-family: var(--font-body); font-size: 10.5px; fill: var(--muted); }
+.fast { stroke: var(--accent); stroke-width: 2; fill: none; }
+.slow { stroke: var(--muted); stroke-width: 1.4; stroke-dasharray: 5 4; fill: none; }
+.ctl { stroke: var(--fg); stroke-width: 1.2; fill: none; }
+.mk-fast { fill: var(--accent); }
+.mk-slow { fill: var(--muted); }
+.mk-ctl { fill: var(--fg); }
+.foil { fill: var(--zone); stroke: var(--fg); stroke-width: 1.2; }
+.flap { stroke: var(--accent); stroke-width: 5; stroke-linecap: round; }
+.tap { fill: var(--accent); }
+.mount { stroke: var(--fg); stroke-width: 1.2; }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">RLGustControl · wind tunnel deployment</div>
+    <h1>Tunnel RL system</h1>
+    <p>The actor runs on the tunnel PC and keeps the pitching moment at zero. The learner runs SAC on the laptop GPU. The two machines only exchange files, through a shared folder on the tunnel PC.</p>
+  </header>
+
+  <figure>
+    <div class="scroll">
+      <svg viewBox="0 0 1240 660" role="img" aria-label="Schematic: the fast control loop from pressure taps through the policy and safety layer to the flap stays on the tunnel PC; episode files go to the laptop learner through a shared network folder, and new policy weights come back the same way and are swapped in between episodes.">
+        <defs>
+          <marker id="a-fast" viewBox="0 0 10 10" refX="9" refY="5" markerUnits="userSpaceOnUse" markerWidth="9" markerHeight="9" orient="auto-start-reverse"><path class="mk-fast" d="M0,0 L10,5 L0,10 z"/></marker>
+          <marker id="a-slow" viewBox="0 0 10 10" refX="9" refY="5" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path class="mk-slow" d="M0,0 L10,5 L0,10 z"/></marker>
+          <marker id="a-ctl" viewBox="0 0 10 10" refX="9" refY="5" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path class="mk-ctl" d="M0,0 L10,5 L0,10 z"/></marker>
+        </defs>
+
+        <!-- zones -->
+        <rect class="zone" x="20" y="56" width="264" height="424" rx="8"/>
+        <rect class="zone" x="294" y="56" width="536" height="584" rx="8"/>
+        <rect class="zone" x="900" y="56" width="322" height="584" rx="8"/>
+        <text class="zt" x="36" y="82">WIND TUNNEL</text>
+        <text class="zt" x="310" y="82">TUNNEL PC · ACTOR · REAL TIME</text>
+        <text class="zt" x="916" y="82">LAPTOP · LEARNER · OWN GPU</text>
+        <text class="zt" x="0" y="0" text-anchor="middle" transform="translate(869 360) rotate(-90)">LAN OR DIRECT ETHERNET</text>
+
+        <!-- ===== wind tunnel ===== -->
+        <rect class="box" x="40" y="100" width="230" height="56" rx="4"/>
+        <text class="t" x="155" y="122" text-anchor="middle">Active turbulence device</text>
+        <text class="s" x="155" y="139" text-anchor="middle">level set per episode</text>
+
+        <rect class="box hot" x="40" y="196" width="230" height="154" rx="4"/>
+        <text class="t" x="155" y="218" text-anchor="middle">2D wing</text>
+        <path class="foil" d="M70,272 C78,253 135,249 200,265 L200,277 C140,285 84,289 70,272 Z"/>
+        <line class="flap" x1="203" y1="271" x2="240" y2="288"/>
+        <circle class="tap" cx="86" cy="260" r="2.2"/>
+        <circle class="tap" cx="102" cy="256" r="2.2"/>
+        <circle class="tap" cx="118" cy="254" r="2.2"/>
+        <circle class="tap" cx="134" cy="254" r="2.2"/>
+        <circle class="tap" cx="150" cy="255" r="2.2"/>
+        <circle class="tap" cx="166" cy="257" r="2.2"/>
+        <circle class="tap" cx="182" cy="260" r="2.2"/>
+        <text class="s" x="155" y="318" text-anchor="middle">20 pressure taps (upper + lower)</text>
+        <text class="s" x="155" y="334" text-anchor="middle">trailing-edge flap on servo</text>
+
+        <rect class="box" x="40" y="400" width="230" height="56" rx="4"/>
+        <text class="t" x="155" y="422" text-anchor="middle">Force balance</text>
+        <text class="s" x="155" y="439" text-anchor="middle">Fx, Fz, My → Cm</text>
+
+        <line class="ctl" x1="155" y1="156" x2="155" y2="194" marker-end="url(#a-ctl)"/>
+        <text class="al" x="163" y="180">gusty flow</text>
+        <line class="mount" x1="155" y1="350" x2="155" y2="400"/>
+        <text class="al" x="163" y="379">mounted on</text>
+
+        <!-- ===== tunnel PC ===== -->
+        <rect class="box" x="340" y="100" width="130" height="56" rx="4"/>
+        <text class="t" x="405" y="122" text-anchor="middle">Episode manager</text>
+        <text class="s" x="405" y="139" text-anchor="middle">reset, settle, start</text>
+
+        <rect class="box" x="500" y="100" width="290" height="56" rx="4"/>
+        <text class="t" x="645" y="122" text-anchor="middle">Live monitor (qtpy)</text>
+        <text class="s" x="645" y="139" text-anchor="middle">Cm, pressures, flap, loop jitter, E-stop</text>
+
+        <rect class="loop" x="328" y="194" width="478" height="188" rx="10"/>
+        <text class="lt" x="340" y="186">FAST CONTROL LOOP · 100–500 Hz · NEVER LEAVES THIS PC</text>
+
+        <rect class="box" x="340" y="210" width="130" height="56" rx="4"/>
+        <text class="t" x="405" y="232" text-anchor="middle">Servo driver</text>
+        <text class="s" x="405" y="249" text-anchor="middle">flap command out</text>
+
+        <rect class="box" x="500" y="210" width="130" height="56" rx="4"/>
+        <text class="t" x="565" y="229" text-anchor="middle">Safety layer</text>
+        <text class="s" x="565" y="245" text-anchor="middle">clamp, rate limit</text>
+        <text class="s" x="565" y="259" text-anchor="middle">watchdog, Cm cutoff</text>
+
+        <rect class="box hot" x="660" y="210" width="130" height="56" rx="4"/>
+        <text class="t" x="725" y="232" text-anchor="middle">Policy π</text>
+        <text class="s" x="725" y="249" text-anchor="middle">frozen weights v_k</text>
+
+        <rect class="box" x="340" y="310" width="130" height="56" rx="4"/>
+        <text class="t" x="405" y="332" text-anchor="middle">DAQ</text>
+        <text class="s" x="405" y="349" text-anchor="middle">full-rate input</text>
+
+        <rect class="box" x="500" y="310" width="130" height="56" rx="4"/>
+        <text class="t" x="565" y="332" text-anchor="middle">Filter + decimate</text>
+        <text class="s" x="565" y="349" text-anchor="middle">to control rate</text>
+
+        <rect class="box" x="660" y="310" width="130" height="56" rx="4"/>
+        <text class="t" x="725" y="329" text-anchor="middle">Observation</text>
+        <text class="s" x="725" y="345" text-anchor="middle">last k pressures</text>
+        <text class="s" x="725" y="359" text-anchor="middle">and actions</text>
+
+        <rect class="box" x="340" y="410" width="130" height="56" rx="4"/>
+        <text class="t" x="405" y="429" text-anchor="middle">Raw logger</text>
+        <text class="s" x="405" y="445" text-anchor="middle">raw/*.parquet</text>
+        <text class="s" x="405" y="459" text-anchor="middle">for PA-AE and LSTM</text>
+
+        <rect class="box" x="500" y="410" width="130" height="56" rx="4"/>
+        <text class="t" x="565" y="432" text-anchor="middle">Transition writer</text>
+        <text class="s" x="565" y="449" text-anchor="middle">one file per episode</text>
+
+        <rect class="box" x="660" y="410" width="130" height="56" rx="4"/>
+        <text class="t" x="725" y="432" text-anchor="middle">Weight loader</text>
+        <text class="s" x="725" y="449" text-anchor="middle">newest policy_vN</text>
+
+        <rect class="folder" x="500" y="500" width="130" height="46" rx="4"/>
+        <text class="m" x="565" y="519" text-anchor="middle">outbox/</text>
+        <text class="s" x="565" y="535" text-anchor="middle">ep_N.parquet</text>
+
+        <rect class="folder" x="660" y="500" width="130" height="46" rx="4"/>
+        <text class="m" x="725" y="519" text-anchor="middle">weights/</text>
+        <text class="s" x="725" y="535" text-anchor="middle">policy_vN.pt</text>
+
+        <rect class="share" x="488" y="488" width="314" height="88" rx="6"/>
+        <text class="al" x="577" y="568">shared folder (SMB), not in OneDrive</text>
+
+        <!-- ===== HPC ===== -->
+        <rect class="box" x="920" y="100" width="270" height="56" rx="4"/>
+        <text class="t" x="1055" y="122" text-anchor="middle">Seed data</text>
+        <text class="s" x="1055" y="139" text-anchor="middle">sim pretraining, open-loop tunnel runs</text>
+
+        <rect class="box" x="920" y="200" width="270" height="56" rx="4"/>
+        <text class="t" x="1055" y="222" text-anchor="middle">Replay buffer</text>
+        <text class="s" x="1055" y="239" text-anchor="middle">every transition, reused many times</text>
+
+        <rect class="box" x="920" y="300" width="270" height="130" rx="4"/>
+        <text class="t" x="1055" y="324" text-anchor="middle">SAC update</text>
+        <text class="s" x="1055" y="344" text-anchor="middle">high update-to-data ratio</text>
+        <text class="s" x="1055" y="362" text-anchor="middle">actor sees pressure history only</text>
+        <text class="s" x="1055" y="380" text-anchor="middle">critics also see forces and moments</text>
+        <text class="m" x="1055" y="408" text-anchor="middle">r = −Cm² − c₁u² − c₂Δu²</text>
+
+        <rect class="box" x="920" y="474" width="270" height="56" rx="4"/>
+        <text class="t" x="1055" y="496" text-anchor="middle">Weight publisher</text>
+        <text class="s" x="1055" y="513" text-anchor="middle">atomic write every N steps</text>
+
+
+        <!-- ===== arrows: fast loop ===== -->
+        <line class="fast" x1="270" y1="324" x2="338" y2="324" marker-end="url(#a-fast)"/>
+        <text class="al" x="304" y="317" text-anchor="middle">pressures</text>
+        <path class="fast" d="M270,428 L310,428 L310,352 L338,352" marker-end="url(#a-fast)"/>
+        <text class="al" x="290" y="444" text-anchor="middle">loads</text>
+        <line class="fast" x1="470" y1="338" x2="498" y2="338" marker-end="url(#a-fast)"/>
+        <line class="fast" x1="630" y1="338" x2="658" y2="338" marker-end="url(#a-fast)"/>
+        <line class="fast" x1="725" y1="310" x2="725" y2="268" marker-end="url(#a-fast)"/>
+        <line class="fast" x1="660" y1="238" x2="632" y2="238" marker-end="url(#a-fast)"/>
+        <line class="fast" x1="500" y1="238" x2="472" y2="238" marker-end="url(#a-fast)"/>
+        <line class="fast" x1="340" y1="238" x2="272" y2="238" marker-end="url(#a-fast)"/>
+        <text class="al" x="304" y="231" text-anchor="middle">flap angle</text>
+
+        <!-- ===== arrows: commands ===== -->
+        <line class="ctl" x1="340" y1="128" x2="272" y2="128" marker-end="url(#a-ctl)"/>
+        <text class="al" x="306" y="121" text-anchor="middle">set, start</text>
+        <line class="ctl" x1="500" y1="128" x2="472" y2="128" marker-end="url(#a-ctl)"/>
+
+        <!-- ===== arrows: slow / file path ===== -->
+        <line class="slow" x1="405" y1="366" x2="405" y2="408" marker-end="url(#a-slow)"/>
+        <line class="slow" x1="565" y1="366" x2="565" y2="408" marker-end="url(#a-slow)"/>
+        <text class="al" x="573" y="400">obs, action, Cm, loads, v_k</text>
+        <line class="slow" x1="565" y1="466" x2="565" y2="498" marker-end="url(#a-slow)"/>
+        <line class="slow" x1="725" y1="500" x2="725" y2="468" marker-end="url(#a-slow)"/>
+        <path class="slow" d="M790,438 L816,438 L816,238 L792,238" marker-end="url(#a-slow)"/>
+        <text class="al" x="0" y="0" text-anchor="middle" transform="translate(827 338) rotate(-90)">between episodes</text>
+        <path class="slow" d="M565,546 L565,620 L1206,620 L1206,228 L1192,228" marker-end="url(#a-slow)"/>
+        <text class="al" x="1055" y="612" text-anchor="middle">read ep_N.parquet over the network</text>
+        <path class="slow" d="M920,502 L856,502 L856,523 L792,523" marker-end="url(#a-slow)"/>
+        <text class="al" x="856" y="495" text-anchor="middle">policy_vN.pt</text>
+
+        <line class="slow" x1="1055" y1="156" x2="1055" y2="198" marker-end="url(#a-slow)"/>
+        <text class="al" x="0" y="0" text-anchor="middle" transform="translate(1216 420) rotate(-90)">new episodes</text>
+        <line class="slow" x1="1055" y1="256" x2="1055" y2="298" marker-end="url(#a-slow)"/>
+        <text class="al" x="1063" y="281">sample batches</text>
+        <line class="slow" x1="1055" y1="430" x2="1055" y2="472" marker-end="url(#a-slow)"/>
+        <text class="al" x="1063" y="455">every N steps</text>
+      </svg>
+    </div>
+    <div class="legend" aria-hidden="true">
+      <span><svg viewBox="0 0 40 10"><line class="fast" x1="0" y1="5" x2="40" y2="5"/></svg>Real-time signal, every control step</span>
+      <span><svg viewBox="0 0 40 10"><line class="slow" x1="0" y1="5" x2="40" y2="5"/></svg>Files, per episode or every few seconds</span>
+      <span><svg viewBox="0 0 40 10"><line class="ctl" x1="0" y1="5" x2="40" y2="5"/></svg>Commands and physical flow</span>
+    </div>
+    <figcaption>The teal loop is the only path with a deadline, and it never touches the network. Everything that crosses to the laptop is a file in one shared folder. Late files cost learning speed, never control. New weights only enter the policy between episodes, so one episode always runs on one policy version.</figcaption>
+  </figure>
+
+  <div class="notes">
+    <section>
+      <h2>Why off-policy</h2>
+      <p>The actor always runs weights a few seconds to minutes old. SAC learns from that data directly and reuses each tunnel sample many times. PPO would have to discard or correct it.</p>
+    </section>
+    <section>
+      <h2>What the critic gets that the actor doesn't</h2>
+      <p>The policy uses only the pressure taps, because that's the sensor it will fly with. The critics also see the balance loads, which they only need during training. The reward is computed from <code>Cm</code> measured by the balance.</p>
+    </section>
+    <section>
+      <h2>Still to decide</h2>
+      <ul>
+        <li>DAQ hardware and its Python interface</li>
+        <li>Control rate, which depends on servo bandwidth</li>
+        <li>Python loop, or a Rust loop in <code>ruststuff</code> if jitter is too high</li>
+        <li>How the laptop reaches the tunnel PC: lab network or a direct cable</li>
+        <li>Shared folder location, kept outside OneDrive so sync can't lock or duplicate files</li>
+      </ul>
+    </section>
+  </div>
+</div>
+
+</body></html>

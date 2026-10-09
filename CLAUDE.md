@@ -1,7 +1,7 @@
 # CLAUDE.md
 
 ## Project
-University Part IV GDP: online estimation and reinforcement-learning-based control for unsteady aerodynamic systems hit by large-amplitude gusts. Goal: detect disturbances from surface pressure sensors on a 2D wing, estimate unsteady forces, and synthesise controllers that hold a desired aerodynamic performance (e.g. constant lift) during gust encounters.
+University Part IV GDP: online estimation and reinforcement-learning-based control for unsteady aerodynamic systems hit by large-amplitude gusts. Goal: detect disturbances from surface pressure sensors on a 3D delta wing model (~50 taps), estimate unsteady forces, and synthesise controllers that hold a desired aerodynamic performance (e.g. zero pitching moment) during gust encounters.
 
 ## Modelling approach
 Combine Physics Augmented Auto Encoders (PA-AE), LSTM networks and RL to control the wing in extreme aerodynamic conditions.

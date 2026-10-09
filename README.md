@@ -2,7 +2,7 @@
 
 Project summary
 ---------------
-This student research project develops online estimation and reinforcement-learning-based control methods for unsteady aerodynamic systems exposed to large-amplitude gusts. The aim is to detect aerodynamic disturbances from surface pressure sensors on a 2D wing, estimate the unsteady forces, and synthesise controllers that maintain desired aerodynamic performance (for example, constant lift) during gust encounters.
+This student research project develops online estimation and reinforcement-learning-based control methods for unsteady aerodynamic systems exposed to large-amplitude gusts. The aim is to detect aerodynamic disturbances from surface pressure sensors on a 3D delta wing model, estimate the unsteady forces, and synthesise controllers that maintain desired aerodynamic performance (for example, zero pitching moment) during gust encounters.
 
 Modelling Approach
 ----------------

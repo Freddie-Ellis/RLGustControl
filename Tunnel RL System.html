@@ -71,7 +71,6 @@ code { font-family: var(--font-mono); font-size: 0.9em; }
 .mk-slow { fill: var(--muted); }
 .mk-ctl { fill: var(--fg); }
 .foil { fill: var(--zone); stroke: var(--fg); stroke-width: 1.2; }
-.flap { stroke: var(--accent); stroke-width: 5; stroke-linecap: round; }
 .tap { fill: var(--accent); }
 .mount { stroke: var(--fg); stroke-width: 1.2; }
 </style>
@@ -85,7 +84,7 @@ code { font-family: var(--font-mono); font-size: 0.9em; }
 
   <figure>
     <div class="scroll">
-      <svg viewBox="0 0 1240 660" role="img" aria-label="Schematic: the fast control loop from pressure taps through the policy and safety layer to the flap stays on the tunnel PC; episode files go to the laptop learner through a shared network folder, and new policy weights come back the same way and are swapped in between episodes.">
+      <svg viewBox="0 0 1240 660" role="img" aria-label="Schematic: the fast control loop from the delta wing pressure taps through the policy and safety layer to the control surfaces stays on the tunnel PC; episode files go to the laptop learner through a shared network folder, and new policy weights come back the same way and are swapped in between episodes.">
         <defs>
           <marker id="a-fast" viewBox="0 0 10 10" refX="9" refY="5" markerUnits="userSpaceOnUse" markerWidth="9" markerHeight="9" orient="auto-start-reverse"><path class="mk-fast" d="M0,0 L10,5 L0,10 z"/></marker>
           <marker id="a-slow" viewBox="0 0 10 10" refX="9" refY="5" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path class="mk-slow" d="M0,0 L10,5 L0,10 z"/></marker>
@@ -107,18 +106,25 @@ code { font-family: var(--font-mono); font-size: 0.9em; }
         <text class="s" x="155" y="139" text-anchor="middle">level set per episode</text>
 
         <rect class="box hot" x="40" y="196" width="230" height="154" rx="4"/>
-        <text class="t" x="155" y="218" text-anchor="middle">2D wing</text>
-        <path class="foil" d="M70,272 C78,253 135,249 200,265 L200,277 C140,285 84,289 70,272 Z"/>
-        <line class="flap" x1="203" y1="271" x2="240" y2="288"/>
-        <circle class="tap" cx="86" cy="260" r="2.2"/>
-        <circle class="tap" cx="102" cy="256" r="2.2"/>
-        <circle class="tap" cx="118" cy="254" r="2.2"/>
-        <circle class="tap" cx="134" cy="254" r="2.2"/>
-        <circle class="tap" cx="150" cy="255" r="2.2"/>
-        <circle class="tap" cx="166" cy="257" r="2.2"/>
-        <circle class="tap" cx="182" cy="260" r="2.2"/>
-        <text class="s" x="155" y="318" text-anchor="middle">20 pressure taps (upper + lower)</text>
-        <text class="s" x="155" y="334" text-anchor="middle">trailing-edge flap on servo</text>
+        <text class="t" x="155" y="218" text-anchor="middle">Delta wing model (3D)</text>
+        <polygon class="foil" points="78,272 205,238 205,306"/>
+        <rect class="tap" x="205" y="241" width="11" height="27" rx="1"/>
+        <rect class="tap" x="205" y="276" width="11" height="27" rx="1"/>
+        <circle class="tap" cx="120" cy="265" r="2.2"/>
+        <circle class="tap" cx="120" cy="279" r="2.2"/>
+        <circle class="tap" cx="145" cy="259" r="2.2"/>
+        <circle class="tap" cx="145" cy="272" r="2.2"/>
+        <circle class="tap" cx="145" cy="285" r="2.2"/>
+        <circle class="tap" cx="170" cy="252" r="2.2"/>
+        <circle class="tap" cx="170" cy="265" r="2.2"/>
+        <circle class="tap" cx="170" cy="279" r="2.2"/>
+        <circle class="tap" cx="170" cy="292" r="2.2"/>
+        <circle class="tap" cx="192" cy="246" r="2.2"/>
+        <circle class="tap" cx="192" cy="262" r="2.2"/>
+        <circle class="tap" cx="192" cy="282" r="2.2"/>
+        <circle class="tap" cx="192" cy="298" r="2.2"/>
+        <text class="s" x="155" y="324" text-anchor="middle">~50 surface pressure taps</text>
+        <text class="s" x="155" y="339" text-anchor="middle">trailing-edge control surfaces</text>
 
         <rect class="box" x="40" y="400" width="230" height="56" rx="4"/>
         <text class="t" x="155" y="422" text-anchor="middle">Force balance</text>
@@ -136,14 +142,14 @@ code { font-family: var(--font-mono); font-size: 0.9em; }
 
         <rect class="box" x="500" y="100" width="290" height="56" rx="4"/>
         <text class="t" x="645" y="122" text-anchor="middle">Live monitor (qtpy)</text>
-        <text class="s" x="645" y="139" text-anchor="middle">Cm, pressures, flap, loop jitter, E-stop</text>
+        <text class="s" x="645" y="139" text-anchor="middle">Cm, pressures, deflection, jitter, E-stop</text>
 
         <rect class="loop" x="328" y="194" width="478" height="188" rx="10"/>
         <text class="lt" x="340" y="186">FAST CONTROL LOOP · 100–500 Hz · NEVER LEAVES THIS PC</text>
 
         <rect class="box" x="340" y="210" width="130" height="56" rx="4"/>
         <text class="t" x="405" y="232" text-anchor="middle">Servo driver</text>
-        <text class="s" x="405" y="249" text-anchor="middle">flap command out</text>
+        <text class="s" x="405" y="249" text-anchor="middle">surface commands</text>
 
         <rect class="box" x="500" y="210" width="130" height="56" rx="4"/>
         <text class="t" x="565" y="229" text-anchor="middle">Safety layer</text>
@@ -223,7 +229,7 @@ code { font-family: var(--font-mono); font-size: 0.9em; }
         <line class="fast" x1="660" y1="238" x2="632" y2="238" marker-end="url(#a-fast)"/>
         <line class="fast" x1="500" y1="238" x2="472" y2="238" marker-end="url(#a-fast)"/>
         <line class="fast" x1="340" y1="238" x2="272" y2="238" marker-end="url(#a-fast)"/>
-        <text class="al" x="304" y="231" text-anchor="middle">flap angle</text>
+        <text class="al" x="304" y="231" text-anchor="middle">deflection</text>
 
         <!-- ===== arrows: commands ===== -->
         <line class="ctl" x1="340" y1="128" x2="272" y2="128" marker-end="url(#a-ctl)"/>

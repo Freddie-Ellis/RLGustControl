@@ -25,7 +25,30 @@ class Trace:
     obs: Tensor  # [T, N, obs_dim] observation the action was chosen from
     action: Tensor  # [T, N, act_dim]
     reward: Tensor  # [T, N]
-    extras: dict[str, Tensor] = field(default_factory=dict)  # env-specific signals, each [T, N]
+    extras: dict[str, Tensor] = field(default_factory=dict)  # env-specific signals, each [T, N]7
+
+
+class HistoryWrapper:
+    """Wraps an env to add a history of past states to the observation, so the actor sees a Markov state."""
+
+    def __init__(self, env: Env, history_len: int) -> None:
+        self.env = env
+        self.history_len = history_len
+        self.obs_dim = env.obs_dim * history_len
+        self.act_dim = env.act_dim
+        self.priv_dim = env.priv_dim
+
+    def reset(self) -> Tensor:
+        obs = self.env.reset()
+        self._obs_hist = [obs] * self.history_len
+        return torch.cat(self._obs_hist, dim=-1)
+
+    def step(self, action: Tensor) -> tuple[Tensor, Tensor]:
+        next_obs, reward = self.env.step(action)
+        self._obs_hist.append(next_obs)
+        if len(self._obs_hist) > self.history_len:
+            self._obs_hist.pop(0)
+        return torch.cat(self._obs_hist, dim=-1), reward
 
 
 class Env(ABC):
@@ -34,6 +57,7 @@ class Env(ABC):
     obs_dim: int  # set by each subclass
     act_dim: int
     priv_dim: int = 0  # size of `privileged()`; 0 if the env has none
+    history_len: int = 0  # how many past steps the env keeps in its state; 0 = Markov
 
     def __init__(self, spec: EnvSpec, n_envs: int = 1, seed: int | None = None) -> None:
         """Initialize the environment with the given number of parallel environments and an optional random seed."""

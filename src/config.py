@@ -15,7 +15,7 @@ class Config(BaseModel):
     configs_dir: Path = ROOT / "configs"
 
     # compute
-    device: Literal["cpu", "cuda"] = "cpu"
+    device: Literal["cpu", "cuda"] = "cuda" if torch.cuda.is_available() else "cpu"
     default_seed: int = 0
 
     # training defaults

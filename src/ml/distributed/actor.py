@@ -1,13 +1,12 @@
 """The actor: runs episodes with frozen policy weights and writes each one to the shared folder.
 
-    uv run python -m src.ml.distributed.actor SHARED_DIR [--n-envs 1] [--eval-every 10] [--max-episodes N]
+    uv run python -m src.ml.distributed.actor      (edit the settings below first; start the learner before it)
 
 It never learns and never waits on the learner. Between episodes it picks up the newest weights, so one episode
 always runs on one policy version. In the tunnel it runs on the tunnel PC with n_envs = 1; in simulation it can run
 anywhere, with any n_envs, to test the decoupled setup.
 """
 
-import argparse
 import sys
 import time
 from datetime import datetime
@@ -27,6 +26,12 @@ from src.ml.distributed.files import (
 )
 from src.ml.run_config import RunConfig
 from src.ml.runs import make_env, make_policy
+
+# ----- settings for running this file directly -----
+SHARED = Path(r"C:\rl_shared\session1")  # the same folder the learner uses (config.json comes from it)
+N_ENVS = 1  # parallel envs: 1 in the tunnel, more only for sim envs
+EVAL_EVERY: int | None = None  # every k-th episode deterministic; None -> from the config
+MAX_EPISODES: int | None = None  # None -> run until SHARED/STOP appears
 
 type Episode = tuple[EpisodeMetaData, pl.DataFrame]
 
@@ -125,18 +130,21 @@ class Actor:
             done += 1
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("shared", type=Path, help="shared folder (must contain config.json from the learner)")
-    parser.add_argument("--n-envs", type=int, default=1, help="parallel envs (1 in the tunnel)")
-    parser.add_argument("--eval-every", type=int, default=10, help="every k-th episode is deterministic")
-    parser.add_argument("--max-episodes", type=int, help="stop after this many episodes (for testing)")
-    parser.add_argument("--session", help="session id stored with each episode (default: start time)")
-    args = parser.parse_args()
-
-    actor = Actor(read_config(args.shared), args.shared, n_envs=args.n_envs, session_id=args.session)
-    actor.run(eval_every=args.eval_every, max_episodes=args.max_episodes)
+def run_actor(
+    shared: Path,
+    n_envs: int = 1,
+    eval_every: int | None = None,
+    max_episodes: int | None = None,
+    session_id: str | None = None,
+) -> None:
+    """Build the env and policy from SHARED/config.json and run episodes until STOP (or `max_episodes`)."""
+    cfg = read_config(shared)
+    actor = Actor(cfg, shared, n_envs=n_envs, session_id=session_id)
+    try:
+        actor.run(eval_every=eval_every or cfg.distributed.eval_every, max_episodes=max_episodes)
+    finally:
+        actor.env.close()  # surfaces to neutral and release the rig, however the actor stops
 
 
 if __name__ == "__main__":
-    main()
+    run_actor(SHARED, n_envs=N_ENVS, eval_every=EVAL_EVERY, max_episodes=MAX_EPISODES)

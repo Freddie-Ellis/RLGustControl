@@ -113,6 +113,17 @@ COMPATIBLE_POLICIES: dict[str, set[str]] = {
 }
 
 
+# ----- decoupled actor / learner -----
+class DistributedConfig(StrictModel):
+    """Settings for the split setup (actor on the tunnel PC, learner on the laptop). Ignored by `train.py`.
+
+    The learning rate of data use is still `SACConfig.updates_per_step`: the learner does that many updates per
+    env step it receives, so it learns as fast as data arrives and does not overfit while the tunnel resets.
+    """
+    publish_every: int = 250  # SAC updates between published weight versions
+    eval_every: int = 10  # every k-th actor episode runs the deterministic policy (no exploration)
+
+
 # ----- run -----
 class RunConfig(StrictModel):
     name: str = "run"
@@ -120,6 +131,7 @@ class RunConfig(StrictModel):
     env: EnvConfig = GustLiftEnvConfig()
     policy: PolicyConfig = GaussianMLPConfig()
     algo: AlgoConfig = PPOConfig()
+    distributed: DistributedConfig = DistributedConfig()
 
     @model_validator(mode="after")
     def _check_policy_suits_algo(self) -> RunConfig:

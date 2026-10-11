@@ -76,6 +76,9 @@ class Env(ABC):
         """Env-specific summary metrics of a rollout (e.g. lift error). Override to add some."""
         return {}
 
+    def close(self) -> None:
+        """Release anything the env holds (e.g. the tunnel rig). Override if needed; safe to call twice."""
+
     def zero_action(self, obs: Tensor) -> Tensor:
         """Uncontrolled baseline: always act with zeros."""
         return torch.zeros(obs.shape[0], self.act_dim)

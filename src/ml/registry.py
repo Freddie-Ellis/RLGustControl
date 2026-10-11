@@ -7,6 +7,7 @@ from src.ml.algos.ppo import PPO
 from src.ml.algos.sac import SAC
 from src.ml.envs.base import Env
 from src.ml.envs.gust_lift_dummy import GustLiftDummyEnv
+from src.ml.envs.wind_tunnel import WindTunnelEnv
 from src.ml.envs.xfoil_pitch import XFOILPitchProblemEnv
 from src.ml.policies.base import Policy
 from src.ml.policies.gaussian import GaussianPolicy
@@ -20,6 +21,8 @@ def build_env(cfg: EnvConfig, n_envs: int, seed: int | None = None) -> Env:
             return GustLiftDummyEnv(spec=cfg.spec, params=cfg.params, n_envs=n_envs, seed=seed)
         case "xfoil_pitch":
             return XFOILPitchProblemEnv(spec=cfg.spec, params=cfg.params, n_envs=n_envs, seed=seed)
+        case "wind_tunnel":
+            return WindTunnelEnv(spec=cfg.spec, params=cfg.params, n_envs=n_envs, seed=seed)
 
 def build_policy(cfg: PolicyConfig, obs_dim: int, act_dim: int) -> Policy:
     match cfg.kind:

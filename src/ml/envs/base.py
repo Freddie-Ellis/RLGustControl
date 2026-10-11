@@ -28,29 +28,6 @@ class Trace:
     extras: dict[str, Tensor] = field(default_factory=dict)  # env-specific signals, each [T, N]7
 
 
-class HistoryWrapper:
-    """Wraps an env to add a history of past states to the observation, so the actor sees a Markov state."""
-
-    def __init__(self, env: Env, history_len: int) -> None:
-        self.env = env
-        self.history_len = history_len
-        self.obs_dim = env.obs_dim * history_len
-        self.act_dim = env.act_dim
-        self.priv_dim = env.priv_dim
-
-    def reset(self) -> Tensor:
-        obs = self.env.reset()
-        self._obs_hist = [obs] * self.history_len
-        return torch.cat(self._obs_hist, dim=-1)
-
-    def step(self, action: Tensor) -> tuple[Tensor, Tensor]:
-        next_obs, reward = self.env.step(action)
-        self._obs_hist.append(next_obs)
-        if len(self._obs_hist) > self.history_len:
-            self._obs_hist.pop(0)
-        return torch.cat(self._obs_hist, dim=-1), reward
-
-
 class Env(ABC):
     """Base class for all environments."""
 
@@ -129,3 +106,26 @@ class Env(ABC):
             reward=torch.stack(rew_l),
             extras={k: torch.stack(v) for k, v in ext_l.items()},
         )
+
+
+class HistoryWrapper(Env):
+    """Wraps an env to add a history of past states to the observation, so the actor sees a Markov state."""
+
+    def __init__(self, env: Env, history_len: int) -> None:
+        self.env = env
+        self.history_len = history_len
+        self.obs_dim = env.obs_dim * history_len
+        self.act_dim = env.act_dim
+        self.priv_dim = env.priv_dim
+
+    def reset(self) -> Tensor:
+        obs = self.env.reset()
+        self._obs_hist = [obs] * self.history_len
+        return torch.cat(self._obs_hist, dim=-1)
+
+    def step(self, action: Tensor) -> tuple[Tensor, Tensor]:
+        next_obs, reward = self.env.step(action)
+        self._obs_hist.append(next_obs)
+        if len(self._obs_hist) > self.history_len:
+            self._obs_hist.pop(0)
+        return torch.cat(self._obs_hist, dim=-1), reward

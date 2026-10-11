@@ -4,7 +4,6 @@ import torch
 from pydantic import BaseModel, ConfigDict
 from torch import Tensor
 
-from src.config import CONFIG
 from src.ml.envs.base import Env, EnvSpec, Trace
 
 
@@ -36,7 +35,7 @@ class GustLiftDummyEnv(Env):
         self.gust_t0 = torch.zeros(n_envs)
 
     def _rand(self, *shape: int) -> Tensor:
-        return torch.rand(*shape, generator=self.rng, device=CONFIG.torch_device)
+        return torch.rand(*shape, generator=self.rng)  # envs live on the CPU; only the learner uses the GPU
 
     def _gust(self) -> Tensor:
         """1-cosine gust velocity at the current time, for every env."""

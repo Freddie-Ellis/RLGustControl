@@ -1,0 +1,41 @@
+# SAC on the mock wind tunnel: real-time control loop against a fake rig (src/hw/mock.py).
+name = "sac_tunnel_mock"
+seed = 0
+
+[env]
+kind = "wind_tunnel"
+
+[env.spec]
+dt = 0.01  # 100 Hz control loop, in real time
+horizon = 200  # 2 s episodes
+
+[env.params]
+io = "mock"
+max_deflection_deg = 15.0
+turbulence_min = 0.5
+turbulence_max = 3.0
+settle_s = 0.5
+cm_scale = 0.03
+action_cost = 0.05
+rate_cost = 0.05
+
+[env.params.safety]
+max_rate = 20.0
+cm_trip = 0.3
+
+[env.params.mock]
+n_taps = 50
+n_surfaces = 12
+daq_rate_hz = 1000.0
+
+[policy]
+kind = "squashed_gaussian"
+hidden = 256
+
+[algo]
+kind = "sac"
+iterations = 20
+n_envs = 1
+warmup_transitions = 1000
+batch_size = 256
+updates_per_step = 1

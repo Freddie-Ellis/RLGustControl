@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from src.ml.envs.base import EnvSpec
 from src.ml.envs.gust_lift_dummy import GustLiftParams
+from src.ml.envs.wind_tunnel import WindTunnelParams
 from src.ml.envs.xfoil_pitch import XFOILPitchProblemParams
 
 
@@ -35,7 +36,15 @@ class XFOILPitchEnvConfig(StrictModel):
     params: XFOILPitchProblemParams = XFOILPitchProblemParams()
 
 
-type EnvConfig = Annotated[GustLiftEnvConfig | XFOILPitchEnvConfig, Field(discriminator="kind")]
+class WindTunnelEnvConfig(StrictModel):
+    kind: Literal["wind_tunnel"] = "wind_tunnel"
+    spec: EnvSpec = EnvSpec()  # spec.dt is the real control period in the tunnel
+    params: WindTunnelParams = WindTunnelParams()
+
+
+type EnvConfig = Annotated[
+    GustLiftEnvConfig | XFOILPitchEnvConfig | WindTunnelEnvConfig, Field(discriminator="kind")
+]
 
 
 # ----- policies -----

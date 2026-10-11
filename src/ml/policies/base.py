@@ -39,7 +39,7 @@ class Policy(nn.Module, ABC):
 
     def load(self, path: Path) -> None:
         """Load weights saved by `save` into this (already constructed) policy."""
-        self.load_state_dict(torch.load(path))
+        self.load_state_dict(torch.load(path, map_location="cpu"))  # weights may come from a GPU learner
         self.eval()
 
 

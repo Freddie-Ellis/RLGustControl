@@ -17,7 +17,6 @@ import torch
 from pydantic import BaseModel, ConfigDict
 from torch import Tensor
 
-from src.config import CONFIG
 from src.ml.envs.base import Env, EnvSpec, Trace
 
 _CL_RE = re.compile(r"CL\s*=\s*(-?\d+\.\d+)")
@@ -78,7 +77,7 @@ class XFOILPitchProblemEnv(Env):
         self.setupXFOIL(naca=self.params.naca)
 
     def _rand(self, *shape: int) -> Tensor:
-        return torch.rand(*shape, generator=self.rng, device=CONFIG.torch_device)
+        return torch.rand(*shape, generator=self.rng)  # envs live on the CPU; only the learner uses the GPU
 
     def _gust_deg(self) -> Tensor:
         """1-cosine gust induced angle of attack change at the current time, for every env [deg]."""

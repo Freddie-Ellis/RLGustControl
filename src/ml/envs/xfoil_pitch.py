@@ -62,6 +62,7 @@ class XFOILPitchProblemEnv(Env):
     no_sensors: int = 10  # taps per surface
     obs_dim = no_sensors * 2 + 2  # [pressures (upper, lower), rate of change, previous action]
     act_dim = 1  # [flap angle]
+    priv_dim = 2  # [true cl error, scaled gust angle]: stands in for the balance force next to the pressure taps
 
     def __init__(self, spec: EnvSpec, params: XFOILPitchProblemParams, n_envs: int, seed: int | None = None) -> None:
         super().__init__(spec, n_envs, seed)
@@ -131,6 +132,9 @@ class XFOILPitchProblemEnv(Env):
         err = self.cl - self.params.cl_ref
         reward = -(err**2) - self.params.action_cost * u**2
         return self._obs(pressure_dot), reward
+
+    def privileged(self) -> Tensor:
+        return torch.stack([self.cl - self.params.cl_ref, self._gust_deg() / self.params.gust_amp_deg], dim=-1)
 
     def trace_metrics(self, trace: Trace) -> dict[str, float]:
         err = trace.extras["cl"] - self.params.cl_ref

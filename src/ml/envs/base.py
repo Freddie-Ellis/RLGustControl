@@ -33,6 +33,7 @@ class Env(ABC):
 
     obs_dim: int  # set by each subclass
     act_dim: int
+    priv_dim: int = 0  # size of `privileged()`; 0 if the env has none
 
     def __init__(self, spec: EnvSpec, n_envs: int = 1, seed: int | None = None) -> None:
         """Initialize the environment with the given number of parallel environments and an optional random seed."""
@@ -56,6 +57,15 @@ class Env(ABC):
     @abstractmethod
     def step(self, action: Tensor) -> tuple[Tensor, Tensor]:
         """Take an action in the environment and return the next observation and reward."""
+
+    def privileged(self) -> Tensor:
+        """Signals of the CURRENT state that only the critic may see, [N, priv_dim]. Call after reset/step.
+
+        The actor is deployed with the observation alone (pressure taps), but the critic only exists during
+        training, so it can use anything the rig measures, e.g. balance loads or the turbulence setting. A better
+        informed critic gives the actor better gradients. Override in envs that have such signals.
+        """
+        return torch.zeros(self.n_envs, 0)
 
     def _extras(self) -> dict[str, Tensor]:
         """Env-specific signals to record after each step, each [N]. Override to add some."""

@@ -38,3 +38,4 @@ init_alpha = 0.1
 critic_hidden = 256
 critic_dropout = 0.0
 critic_layer_norm = true
+critic_privileged = true

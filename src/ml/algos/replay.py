@@ -15,9 +15,11 @@ from torch import Tensor
 class Batch:
     """A random minibatch of transitions. Leading dim is the batch size B."""
     obs: Tensor  # [B, obs_dim]
+    priv: Tensor  # [B, priv_dim]  critic-only signals paired with obs (priv_dim may be 0)
     act: Tensor  # [B, act_dim]  squashed action in (-1, 1), as the policy output it
     rew: Tensor  # [B]
     next_obs: Tensor  # [B, obs_dim]
+    next_priv: Tensor  # [B, priv_dim]
     done: Tensor  # [B]  1.0 only for a true terminal state (e.g. a safety trip); time-limit ends are NOT done
 
 
@@ -28,13 +30,15 @@ class ReplayBuffer:
     conditions drift between sessions.
     """
 
-    def __init__(self, capacity: int, obs_dim: int, act_dim: int, device: torch.device) -> None:
+    def __init__(self, capacity: int, obs_dim: int, priv_dim: int, act_dim: int, device: torch.device) -> None:
         self.capacity = capacity
         self.device = device
         self.obs = torch.zeros(capacity, obs_dim, device=device)
+        self.priv = torch.zeros(capacity, priv_dim, device=device)
         self.act = torch.zeros(capacity, act_dim, device=device)
         self.rew = torch.zeros(capacity, device=device)
         self.next_obs = torch.zeros(capacity, obs_dim, device=device)
+        self.next_priv = torch.zeros(capacity, priv_dim, device=device)
         self.done = torch.zeros(capacity, device=device)
         self._next = 0  # where the next transition is written
         self._size = 0
@@ -42,14 +46,19 @@ class ReplayBuffer:
     def __len__(self) -> int:
         return self._size
 
-    def add(self, obs: Tensor, act: Tensor, rew: Tensor, next_obs: Tensor, done: Tensor) -> None:
-        """Add one step from N parallel envs at once: obs [N, obs_dim], act [N, act_dim], rew [N], done [N]."""
+    def add(
+        self, obs: Tensor, priv: Tensor, act: Tensor, rew: Tensor, next_obs: Tensor, next_priv: Tensor, done: Tensor
+    ) -> None:
+        """Add one step from N parallel envs at once: obs [N, obs_dim], priv [N, priv_dim], act [N, act_dim],
+        rew [N], done [N]."""
         n = obs.shape[0]
         idx = (self._next + torch.arange(n, device=self.device)) % self.capacity
         self.obs[idx] = obs.to(self.device)
+        self.priv[idx] = priv.to(self.device)
         self.act[idx] = act.to(self.device)
         self.rew[idx] = rew.to(self.device)
         self.next_obs[idx] = next_obs.to(self.device)
+        self.next_priv[idx] = next_priv.to(self.device)
         self.done[idx] = done.to(self.device)
         self._next = (self._next + n) % self.capacity
         self._size = min(self._size + n, self.capacity)
@@ -57,4 +66,7 @@ class ReplayBuffer:
     def sample(self, batch_size: int) -> Batch:
         """Uniformly random minibatch, with replacement."""
         idx = torch.randint(0, self._size, (batch_size,), device=self.device)
-        return Batch(self.obs[idx], self.act[idx], self.rew[idx], self.next_obs[idx], self.done[idx])
+        return Batch(
+            self.obs[idx], self.priv[idx], self.act[idx], self.rew[idx],
+            self.next_obs[idx], self.next_priv[idx], self.done[idx],
+        )

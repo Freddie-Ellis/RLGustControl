@@ -41,20 +41,28 @@ def critic_mlp(in_dim: int, hidden: int, dropout: float, layer_norm: bool) -> nn
 
 
 class TwinQ(nn.Module):
-    """Two independent critics. Using the smaller of the two counters Q overestimation: a single critic's errors
-    get exploited by the actor, which then chases deflections that only look good because the critic is wrong."""
+    """Two independent critics Q(obs, priv, act). Using the smaller of the two counters Q overestimation: a single
+    critic's errors get exploited by the actor, which then chases deflections that only look good because the
+    critic is wrong.
 
-    def __init__(self, obs_dim: int, act_dim: int, hidden: int, dropout: float, layer_norm: bool) -> None:
+    `priv` is the asymmetric part: the critic also sees e.g. the balance loads, so it predicts future Cm more
+    easily than from the pressure taps alone. The actor still acts from the taps alone.
+    """
+
+    def __init__(
+        self, obs_dim: int, priv_dim: int, act_dim: int, hidden: int, dropout: float, layer_norm: bool
+    ) -> None:
         super().__init__()
-        self.q1 = critic_mlp(obs_dim + act_dim, hidden, dropout, layer_norm)
-        self.q2 = critic_mlp(obs_dim + act_dim, hidden, dropout, layer_norm)
+        in_dim = obs_dim + priv_dim + act_dim
+        self.q1 = critic_mlp(in_dim, hidden, dropout, layer_norm)
+        self.q2 = critic_mlp(in_dim, hidden, dropout, layer_norm)
 
-    def forward(self, obs: Tensor, act: Tensor) -> tuple[Tensor, Tensor]:
-        x = torch.cat([obs, act], dim=-1)
+    def forward(self, obs: Tensor, priv: Tensor, act: Tensor) -> tuple[Tensor, Tensor]:
+        x = torch.cat([obs, priv, act], dim=-1)
         return self.q1(x).squeeze(-1), self.q2(x).squeeze(-1)
 
-    def min_q(self, obs: Tensor, act: Tensor) -> Tensor:
-        q1, q2 = self(obs, act)
+    def min_q(self, obs: Tensor, priv: Tensor, act: Tensor) -> Tensor:
+        q1, q2 = self(obs, priv, act)
         return torch.min(q1, q2)
 
 
@@ -69,11 +77,16 @@ class SAC(Algorithm[SACPolicy]):
         self.log_alpha: Tensor
         self.target_entropy: float
 
-    def setup(self, policy: SACPolicy) -> None:
-        """Create the critics, target critics, alpha and the three optimisers around `policy`."""
+    def setup(self, policy: SACPolicy, priv_dim: int) -> None:
+        """Create the critics, target critics, alpha and the three optimisers around `policy`.
+
+        `priv_dim` is the size of the critic-only input (0 gives the critic the same view as the actor).
+        """
         c = self.cfg
         self.policy = policy.to(self.device)
-        self.critic = TwinQ(policy.obs_dim, policy.act_dim, c.critic_hidden, c.critic_dropout, c.critic_layer_norm)
+        self.critic = TwinQ(
+            policy.obs_dim, priv_dim, policy.act_dim, c.critic_hidden, c.critic_dropout, c.critic_layer_norm
+        )
         self.critic = self.critic.to(self.device)
         # Slow-moving copy used for the Bellman target, so the target does not jump every time the critic does.
         self.critic_target = copy.deepcopy(self.critic).requires_grad_(False)
@@ -98,9 +111,9 @@ class SAC(Algorithm[SACPolicy]):
         #    a_old can come from any older policy; only the next action a' is re-sampled, which is why old data works.
         with torch.no_grad():
             next_act, next_logp = self.policy.rsample(batch.next_obs)
-            next_v = self.critic_target.min_q(batch.next_obs, next_act) - self.alpha * next_logp
+            next_v = self.critic_target.min_q(batch.next_obs, batch.next_priv, next_act) - self.alpha * next_logp
             target = batch.rew + c.gamma * (1.0 - batch.done) * next_v
-        q1, q2 = self.critic(batch.obs, batch.act)
+        q1, q2 = self.critic(batch.obs, batch.priv, batch.act)
         critic_loss = F.mse_loss(q1, target) + F.mse_loss(q2, target)
         self.critic_opt.zero_grad()
         critic_loss.backward()
@@ -109,7 +122,8 @@ class SAC(Algorithm[SACPolicy]):
         # 2. Actor: propose fresh actions for the stored states and move uphill on the critic. Gradients flow
         #    Q -> a -> rsample -> actor weights. Only actor_opt steps, so the critic is used here but not changed.
         act, logp = self.policy.rsample(batch.obs) # Points to the actors weights via the reparameterisation trick, so gradients flow from the critic into the actor
-        actor_loss = (self.alpha * logp - self.critic.min_q(batch.obs, act)).mean()
+        # The actor saw obs only; priv goes to the critic, which judges the actor's action with the extra info.
+        actor_loss = (self.alpha * logp - self.critic.min_q(batch.obs, batch.priv, act)).mean()
         self.actor_opt.zero_grad() # Actor optimiser points to the actors weights via its creation
         actor_loss.backward()
         self.actor_opt.step()
@@ -137,13 +151,18 @@ class SAC(Algorithm[SACPolicy]):
         """Synchronous simulation loop. One iteration = one episode in every parallel env, the same unit as a tunnel
         episode (where new weights are swapped in between episodes)."""
         c = self.cfg
-        self.setup(policy)
+        priv_dim = env.priv_dim if c.critic_privileged else 0
+        self.setup(policy, priv_dim)
         self.policy.train()
-        buffer = ReplayBuffer(c.buffer_size, env.obs_dim, env.act_dim, self.device)
+        buffer = ReplayBuffer(c.buffer_size, env.obs_dim, priv_dim, env.act_dim, self.device)
         n_transitions = 0
+
+        def privileged() -> Tensor:
+            return env.privileged() if c.critic_privileged else torch.zeros(env.n_envs, 0)
 
         for it in range(c.iterations):
             obs = env.reset()
+            priv = privileged()
             ep_return = torch.zeros(env.n_envs)
             sums: dict[str, float] = {}
             n_updates = 0
@@ -156,10 +175,11 @@ class SAC(Algorithm[SACPolicy]):
                 else:
                     act = self.policy.act(obs.to(self.device))[0].cpu()
                 next_obs, rew = env.step(act)
+                next_priv = privileged()
                 # Our episodes only end on the clock (truncation), so done = 0 and the target still bootstraps.
-                buffer.add(obs, act, rew, next_obs, torch.zeros(env.n_envs))
+                buffer.add(obs, priv, act, rew, next_obs, next_priv, torch.zeros(env.n_envs))
                 ep_return += rew
-                obs = next_obs
+                obs, priv = next_obs, next_priv
                 n_transitions += env.n_envs
 
                 if n_transitions >= c.warmup_transitions and len(buffer) >= c.batch_size:

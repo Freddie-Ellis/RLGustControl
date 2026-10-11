@@ -92,6 +92,7 @@ class SACConfig(AlgoConfigBase):
     critic_hidden: int = 256
     critic_dropout: float = 0.0  # DroQ uses ~0.01 with updates_per_step ~ 20
     critic_layer_norm: bool = True
+    critic_privileged: bool = True  # give the critic env.privileged() (e.g. balance loads); False = same view as actor
 
 
 type AlgoConfig = Annotated[PPOConfig | SACConfig, Field(discriminator="kind")]

@@ -62,6 +62,7 @@ class XFOILPitchProblemEnv(Env):
     obs_dim = no_sensors * 2 + 2  # [pressures (upper, lower), rate of change, previous action]
     act_dim = 1  # [flap angle]
     priv_dim = 2  # [true cl error, scaled gust angle]: stands in for the balance force next to the pressure taps
+    priv_names = ("cl_err", "gust")
 
     def __init__(self, spec: EnvSpec, params: XFOILPitchProblemParams, n_envs: int, seed: int | None = None) -> None:
         super().__init__(spec, n_envs, seed)

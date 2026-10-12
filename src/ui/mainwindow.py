@@ -6,6 +6,7 @@ from qtpy.QtWidgets import QMainWindow, QTabWidget
 from src.ui.tabs.data_tab import DataTab
 from src.ui.tabs.rollout_tab import RolloutTab
 from src.ui.tabs.runs_tab import RunsTab
+from src.ui.tabs.session_tab import SessionTab
 from src.ui.tabs.train_tab import TrainTab
 
 
@@ -18,12 +19,14 @@ class MainWindow(QMainWindow):
         self.runs = RunsTab()
         self.rollout = RolloutTab()
         self.train = TrainTab()
+        self.session = SessionTab()
         self.data = DataTab()
 
         self.tabs = QTabWidget()
         self.tabs.addTab(self.runs, "Runs")
         self.tabs.addTab(self.rollout, "Rollout")
         self.tabs.addTab(self.train, "Train")
+        self.tabs.addTab(self.session, "Session")
         self.tabs.addTab(self.data, "Data")
         self.setCentralWidget(self.tabs)
 

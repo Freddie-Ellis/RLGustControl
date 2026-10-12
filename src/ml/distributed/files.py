@@ -6,6 +6,7 @@
         outbox/ep_000042.parquet    the episode's transitions (written last = "episode complete")
         weights/policy_v000007.pt   policy weights, newest version wins
         STOP                        create to stop the actor after its current episode
+        learner_run.txt             path of the learner's runs/ directory (for the Session tab)
 
 Every file is written to `<name>.tmp` and then renamed, so a reader never sees a half-written file even over a
 network share. Keep the shared folder outside OneDrive: sync can lock or duplicate files mid-write.
@@ -42,6 +43,10 @@ def config_path(shared: Path) -> Path:
 
 def stop_path(shared: Path) -> Path:
     return shared / "STOP"
+
+
+def learner_run_path(shared: Path) -> Path:
+    return shared / "learner_run.txt"
 
 
 def init_shared(shared: Path, cfg: RunConfig) -> None:

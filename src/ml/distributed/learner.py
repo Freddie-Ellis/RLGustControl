@@ -24,10 +24,12 @@ from src.config import CONFIG
 from src.ml.algos.replay import ReplayBuffer
 from src.ml.algos.sac import SAC
 from src.ml.distributed.files import (
+    atomic_write_text,
     config_path,
     frame_to_transitions,
     init_shared,
     latest_weights,
+    learner_run_path,
     new_episodes,
     read_config,
     read_episode,
@@ -46,6 +48,7 @@ SEED_FROM: list[Path] = []  # extra outbox folders to pre-load, e.g. open-loop t
 MAX_UPDATES: int | None = None  # None -> run until SHARED/STOP appears
 
 UPDATE_CHUNK = 50  # updates between checks for new episodes / STOP
+LOG_EVERY = 50  # updates per metrics row (the Session tab plots these), independent of publishing
 IDLE_SLEEP_S = 0.2  # wait when there is no data and no update budget
 
 
@@ -117,20 +120,23 @@ class Learner:
             self.updates += 1
             if self.updates % self.cfg.distributed.publish_every == 0:
                 self.publish()
+            if self.updates % LOG_EVERY == 0:
+                self.log()
 
     def publish(self) -> None:
-        """New weights for the actor, which picks them up before its next episode. Also logs a metrics row."""
+        """New weights for the actor, which picks them up before its next episode."""
         self.version += 1
         write_weights(self.shared, self.version, self.policy)
         self.policy.save(self.run_dir.policy_path)
-        self.log()
+        print(f"published v{self.version} after {self.updates} updates, {self.env_steps} env steps", flush=True)
 
     # ----- logging -----
     def _note(self, key: str, value: float) -> None:
         self._since_log.setdefault(key, []).append(value)
 
     def log(self) -> None:
-        """One row per published version. Columns are fixed (NaN when nothing arrived) so the CSV stays valid."""
+        """One row per LOG_EVERY updates, keyed by update count. Columns are fixed (NaN when nothing arrived, e.g.
+        returns between episodes) so the CSV stays valid."""
         def mean(key: str) -> float:
             vals = self._since_log.get(key, [])
             return sum(vals) / len(vals) if vals else float("nan")
@@ -144,17 +150,13 @@ class Learner:
             "staleness": mean("staleness"),
             **{k: mean(k) for k in ("critic_loss", "actor_loss", "alpha", "entropy", "q_mean")},
         }
-        self.run_dir.append_metrics(self.version, row)
-        status = self.run_dir.read_status()
-        status.iterations_done = self.version
-        status.final_return = row["train_return"] if math.isnan(row["eval_return"]) else row["eval_return"]
-        self.run_dir.write_status(status)
-        print(
-            f"v{self.version:<4d} steps {self.env_steps:8d} updates {self.updates:8d} "
-            f"train {row['train_return']:9.3f} eval {row['eval_return']:9.3f} staleness {row['staleness']:5.2f} "
-            f"alpha {row['alpha']:.4f}",
-            flush=True,
-        )
+        self.run_dir.append_metrics(self.updates, row)
+        latest_return = row["train_return"] if math.isnan(row["eval_return"]) else row["eval_return"]
+        if not math.isnan(latest_return):  # most rows fall between episodes; keep the last real return
+            status = self.run_dir.read_status()
+            status.iterations_done = self.version
+            status.final_return = latest_return
+            self.run_dir.write_status(status)
         self._since_log = {}
 
     # ----- main loop -----
@@ -188,6 +190,7 @@ def run_learner(
     torch.manual_seed(config.seed)
     run = RunDir.create(config, CONFIG.runs_dir)
     print(f"RUN_DIR {run.path}", flush=True)
+    atomic_write_text(learner_run_path(shared), str(run.path))  # lets the Session tab find the learner's metrics
     learner = Learner(config, shared, run)
     for folder in seed_from or []:
         n = learner.ingest(sorted(folder.glob("ep_*.parquet")))

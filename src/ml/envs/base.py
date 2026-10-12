@@ -34,6 +34,7 @@ class Env(ABC):
     obs_dim: int  # set by each subclass
     act_dim: int
     priv_dim: int = 0  # size of `privileged()`; 0 if the env has none
+    priv_names: tuple[str, ...] = ()  # one name per privileged column, so tools can find e.g. "cm"
     history_len: int = 0  # how many past steps the env keeps in its state; 0 = Markov
 
     def __init__(self, spec: EnvSpec, n_envs: int = 1, seed: int | None = None) -> None:
@@ -67,6 +68,10 @@ class Env(ABC):
         informed critic gives the actor better gradients. Override in envs that have such signals.
         """
         return torch.zeros(self.n_envs, 0)
+
+    def episode_info(self) -> dict[str, float]:
+        """Scalars describing the current episode (e.g. its turbulence level), stored in the episode metadata."""
+        return {}
 
     def _extras(self) -> dict[str, Tensor]:
         """Env-specific signals to record after each step, each [N]. Override to add some."""

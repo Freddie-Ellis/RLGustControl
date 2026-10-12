@@ -53,6 +53,7 @@ class WindTunnelParams(BaseModel):
 
 class WindTunnelEnv(Env):
     priv_dim = 4
+    priv_names = ("cx", "cz", "cm", "turbulence")
 
     def __init__(self, spec: EnvSpec, params: WindTunnelParams, n_envs: int = 1, seed: int | None = None) -> None:
         if n_envs != 1:
@@ -109,7 +110,7 @@ class WindTunnelEnv(Env):
         self.io.safe_state()
         # New turbulence level each episode, so the policy sees the whole range it must handle.
         self.level = p.turbulence_min + (p.turbulence_max - p.turbulence_min) * float(torch.rand(1, generator=self.rng))
-        self.io.set_turbulence(self.level)
+        self.io.set_turbulence(self.level) # TODO: Communicates with active grid?
         time.sleep(p.settle_s)  # let the flow settle; in the tunnel this is where weights get loaded
         self.io.read_block()  # discard everything from before the episode
         self.clock.start()
@@ -137,6 +138,9 @@ class WindTunnelEnv(Env):
     def privileged(self) -> Tensor:
         level = self.level / self.params.turbulence_max
         return torch.cat([self.coeffs, torch.tensor([level])]).unsqueeze(0)
+
+    def episode_info(self) -> dict[str, float]:
+        return {"turbulence_level": self.level}
 
     def _extras(self) -> dict[str, Tensor]:
         return {

@@ -25,6 +25,7 @@ class GustLiftDummyEnv(Env):
     obs_dim = 3  # [cl error, scaled cl rate, previous action]
     act_dim = 1
     priv_dim = 2  # [current gust, episode gust amplitude]: stands in for the tunnel knowing its turbulence setting
+    priv_names = ("gust", "gust_amp")
 
     def __init__(self, spec: EnvSpec, params: GustLiftParams, n_envs: int, seed: int | None = None) -> None:
         super().__init__(spec, n_envs, seed)

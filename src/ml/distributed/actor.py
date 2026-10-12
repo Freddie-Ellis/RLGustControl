@@ -99,6 +99,7 @@ class Actor:
             n_steps=len(steps),
             loop_dt_mean=sum(dts) / len(dts),
             loop_dt_max=max(dts),
+            turbulence_level=env.episode_info().get("turbulence_level"),
             created=datetime.now().astimezone(),
         )
         return meta, transitions_to_frame(*columns)

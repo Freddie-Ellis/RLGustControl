@@ -12,6 +12,7 @@ batches from tunnel episode files instead.
 
 import copy
 import math
+from typing import Any
 
 import torch
 import torch.nn.functional as F
@@ -98,6 +99,30 @@ class SAC(Algorithm[SACPolicy]):
         self.actor_opt = torch.optim.Adam(self.policy.parameters(), lr=c.actor_lr)
         self.critic_opt = torch.optim.Adam(self.critic.parameters(), lr=c.critic_lr)
         self.alpha_opt = torch.optim.Adam([self.log_alpha], lr=c.alpha_lr)
+
+    def state_dict(self) -> dict[str, Any]:
+        """Everything needed to carry on learning where this left off: the policy, both critics and their targets,
+        alpha, and all three optimisers' moments."""
+        return {
+            "policy": self.policy.state_dict(),
+            "critic": self.critic.state_dict(),
+            "critic_target": self.critic_target.state_dict(),
+            "log_alpha": self.log_alpha.detach(),
+            "actor_opt": self.actor_opt.state_dict(),
+            "critic_opt": self.critic_opt.state_dict(),
+            "alpha_opt": self.alpha_opt.state_dict(),
+        }
+
+    def load_state_dict(self, state: dict[str, Any]) -> None:
+        """Restore a `state_dict` into this SAC after `setup` (same config and dimensions)."""
+        self.policy.load_state_dict(state["policy"])
+        self.critic.load_state_dict(state["critic"])
+        self.critic_target.load_state_dict(state["critic_target"])
+        with torch.no_grad():
+            self.log_alpha.copy_(state["log_alpha"])  # in place: alpha_opt holds this tensor
+        self.actor_opt.load_state_dict(state["actor_opt"])
+        self.critic_opt.load_state_dict(state["critic_opt"])
+        self.alpha_opt.load_state_dict(state["alpha_opt"])
 
     @property
     def alpha(self) -> Tensor:

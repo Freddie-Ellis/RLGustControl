@@ -28,3 +28,6 @@ Thumbs.db
 
 # Ignore all slurm
 *.slurm
+
+# Ignore profiles
+*.prof

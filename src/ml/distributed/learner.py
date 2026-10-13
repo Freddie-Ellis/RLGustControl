@@ -9,8 +9,9 @@ Runs on the laptop (GPU if available). Never talks to the actor directly, only t
 Learning is tied to data: each env step received earns `updates_per_step` SAC updates. While the tunnel resets and
 nothing arrives, the learner waits instead of re-fitting the same buffer over and over (which overfits).
 
-Restart-safe: on start it re-reads every episode already in the outbox and carries on from the newest weights, so
-stopping the laptop loses no tunnel data. (The critic restarts from scratch until SAC state saving exists.)
+Restart-safe: on start it re-reads every episode already in the outbox and carries on from the last saved learner
+state (policy, critics, alpha, optimisers, update count), so stopping the laptop loses no tunnel data and no learning
+beyond the updates since the last publish.
 """
 
 import math
@@ -33,7 +34,9 @@ from src.ml.distributed.files import (
     new_episodes,
     read_config,
     read_episode,
+    read_learner_state,
     stop_path,
+    write_learner_state,
     write_weights,
 )
 from src.ml.policies.base import SACPolicy
@@ -67,14 +70,21 @@ class Learner:
         policy = make_policy(cfg)
         assert isinstance(policy, SACPolicy)  # guaranteed by RunConfig's policy/algo check
         self.policy = policy
-        self.version = 0
-        if (latest := latest_weights(shared)) is not None:  # resume the policy from the last session, dont think this works cos if a config exists run learner exits TODO:
-            self.version, path = latest
-            self.policy.load(path)
-            print(f"resuming from weights v{self.version}", flush=True)
-
         self.sac = SAC(self.algo_cfg)
         self.sac.setup(self.policy, self.priv_dim)
+        self.version = 0
+        self.updates = 0
+        # Resume from the last session. TODO: dont think this works cos if a config exists run learner exits
+        if (state := read_learner_state(shared, self.sac.device)) is not None:
+            self.sac.load_state_dict(state["sac"])
+            self.version, self.updates = state["version"], state["updates"]
+            print(f"resuming from v{self.version} after {self.updates} updates (critics and optimisers restored)",
+                  flush=True)
+        elif (latest := latest_weights(shared)) is not None:  # a session from before learner state was saved
+            self.version, path = latest
+            self.policy.load(path)
+            print(f"resuming policy from weights v{self.version}; no learner state, so the critics start fresh",
+                  flush=True)
         self.sac.policy.train()
         self.buffer = ReplayBuffer(
             self.algo_cfg.buffer_size, env.obs_dim, self.priv_dim, env.act_dim, self.sac.device
@@ -83,7 +93,6 @@ class Learner:
         self.seen: set[str] = set()
         self.env_steps = 0  # control steps received (each gives n_envs transitions); earns update budget
         self.transitions = 0  # rows received; warmup is counted in these, as in SAC.train
-        self.updates = 0
         self._since_log: dict[str, list[float]] = {}  # metrics accumulated since the last log row
 
     # ----- data -----
@@ -126,6 +135,9 @@ class Learner:
     def publish(self) -> None:
         """New weights for the actor, which picks them up before its next episode."""
         self.version += 1
+        # State before weights: if we die in between, the resume just skips this version number, which is harmless.
+        # Restoring `updates` too stops a resume re-spending the whole outbox's update budget on old data.
+        write_learner_state(self.shared, {"version": self.version, "updates": self.updates, "sac": self.sac.state_dict()})
         write_weights(self.shared, self.version, self.policy)
         self.policy.save(self.run_dir.policy_path)
         print(f"published v{self.version} after {self.updates} updates, {self.env_steps} env steps", flush=True)

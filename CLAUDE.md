@@ -26,3 +26,5 @@ Use these, and don't substitute alternatives:
 - Use Polars, never Pandas.
 - Put performance-critical code in the Rust backend rather than slow Python loops.
 - Ask before adding new dependencies.
+- Keep UI and functionality separate. Functional code (`src/ml/`, `src/hw/`, `src/data/`) never imports Qt. UI code (`src/ui/`) only displays results and launches functional code; it holds no logic of its own.
+- Settings and constants live with the functional code they belong to (module constants, configs, function defaults). The UI only sets a value when it has a widget for exactly that setting (e.g. the shared-folder box). Otherwise it passes the functional module's own value through, so there is one obvious place each constant comes from.

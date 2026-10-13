@@ -5,6 +5,7 @@
         outbox/ep_000042.json       EpisodeMetaData        (written first)
         outbox/ep_000042.parquet    the episode's transitions (written last = "episode complete")
         weights/policy_v000007.pt   policy weights, newest version wins
+        learner_state.pt            the learner's full SAC state (critics, alpha, optimisers), for resuming
         STOP                        create to stop the actor after its current episode
         learner_run.txt             path of the learner's runs/ directory (for the Session tab)
 
@@ -15,6 +16,7 @@ network share. Keep the shared folder outside OneDrive: sync can lock or duplica
 import re
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import polars as pl
 import torch
@@ -47,6 +49,10 @@ def stop_path(shared: Path) -> Path:
 
 def learner_run_path(shared: Path) -> Path:
     return shared / "learner_run.txt"
+
+
+def learner_state_path(shared: Path) -> Path:
+    return shared / "learner_state.pt"
 
 
 def init_shared(shared: Path, cfg: RunConfig) -> None:
@@ -127,6 +133,18 @@ def write_weights(shared: Path, version: int, policy: Policy) -> Path:
     torch.save({k: v.detach().cpu() for k, v in policy.state_dict().items()}, _tmp(path))
     _tmp(path).replace(path)
     return path
+
+
+def write_learner_state(shared: Path, state: dict[str, Any]) -> None:
+    """Only the learner reads this back, so tensors stay on its device."""
+    path = learner_state_path(shared)
+    torch.save(state, _tmp(path))
+    _tmp(path).replace(path)
+
+
+def read_learner_state(shared: Path, device: torch.device) -> dict[str, Any] | None:
+    path = learner_state_path(shared)
+    return torch.load(path, map_location=device) if path.exists() else None
 
 
 def latest_weights(shared: Path) -> tuple[int, Path] | None:

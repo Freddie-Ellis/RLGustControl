@@ -1,5 +1,3 @@
-"""Launch the experiment UI"""
-
 import sys
 
 from qtpy.QtWidgets import QApplication
@@ -11,7 +9,9 @@ def main() -> None:
     app = QApplication(sys.argv)
     window = MainWindow()
     window.showMaximized()
-    sys.exit(app.exec())
+
+    exit_code: int = app.exec()
+    sys.exit(exit_code)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
+import cProfile
 from pathlib import Path
 
-from qtpy.QtGui import QCloseEvent
+from qtpy.QtGui import QCloseEvent, QShortcut
 from qtpy.QtWidgets import QMainWindow, QTabWidget
 
 from src.ui.tabs.data_tab import DataTab
@@ -21,12 +22,16 @@ class MainWindow(QMainWindow):
         self.train = TrainTab()
         self.session = SessionTab()
         self.data = DataTab()
+        self.profiler = cProfile.Profile()
+
+        self.profile_shortcut = QShortcut("Ctrl+Shift+P", self)
+        self.profile_shortcut.activated.connect(self._launch_profiler)
 
         self.tabs = QTabWidget()
         self.tabs.addTab(self.runs, "Runs")
         self.tabs.addTab(self.rollout, "Rollout")
         self.tabs.addTab(self.train, "Train")
-        self.tabs.addTab(self.session, "Session")
+        self.tabs.addTab(self.session, "SAC Session")
         self.tabs.addTab(self.data, "Data")
         self.setCentralWidget(self.tabs)
 
@@ -50,5 +55,15 @@ class MainWindow(QMainWindow):
         self.rollout.refresh_runs()
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        if not self.session.shutdown():
+            event.ignore()
+            return
         self.train.shutdown()
         super().closeEvent(event)
+
+    def _launch_profiler(self) -> None:
+        if self.profiler.getstats():
+            self.profiler.disable()
+            self.profiler.dump_stats("profile.prof")
+        else:
+            self.profiler.enable()

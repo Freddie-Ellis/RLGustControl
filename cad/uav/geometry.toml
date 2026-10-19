@@ -1,0 +1,137 @@
+# AeroGeom_v2 delta wing UAV. Loaded by src/cfd/geometry.py (GeometryConfig.from_toml).
+#
+# Coordinate system: the SolidWorks part frame (same as AeroGeom_v2.STEP), in mm.
+#   x streamwise (nose -> tail), y spanwise (to starboard), z up.
+# Positive deflection = right-hand rotation about the hinge axis directed p1 -> p2.
+#
+# Starboard (_r) hinge points are as measured in SolidWorks, ordered to give the intended sign. Port (_l) hinges
+# are the mirror image (y negated) with p1/p2 swapped, because mirroring reverses the rotation sense; this way
+# a given positive deflection is the same physical motion on both sides.
+#
+# Every control surface can be deflected; any surface left out of a case's deflections stays at 0.
+# TODO: confirm all deflection limits (placeholders of +/-25 deg).
+
+name = "uav"
+units = "mm"
+
+# STLs must be exported with "Do not translate STL output data to positive space" ticked, so they are in the
+# part frame. If not, set stl_offset to the shift (STL = part + stl_offset).
+stl_offset = [0.0, 0.0, 0.0]
+
+# SolidWorks leaves thin slits in the main body where the loft meets the wing (x = 49-104, |y| = 32-39),
+# even after Parasolid healing: 0.65 mm^2 in total, largest single hole perimeter 13.1 mm. Filled on load.
+max_hole_perimeter = 20.0
+
+# Planform area and MAC are estimated from the plan-view projection of all bodies (span 650 mm,
+# root chord 520 mm). TODO: replace with the design values, and the moment reference point with the CG.
+[reference]
+point = [187.9, 0.0, 0.0]   # quarter-MAC (MAC leading edge at x = 106.1)
+length = 327.35             # mean aerodynamic chord
+area = 168899.0             # planform area (mm^2)
+
+[[fixed_bodies]]
+name = "main_body"
+stl = "MainBody^AeroGeom_v21_parasolid.STL"   # exported from the Parasolid-healed copy
+
+# All-moving wingtips, pivoting at about mid-chord. The root face (y = +/-275) sits on the main body's
+# side face and stays in that plane as the tip rotates, so no hinge gap opens. Positive = trailing edge up.
+[[control_surfaces]]
+name = "wingtip_r"
+stl = "AeroGeom_v2 - Wingtip^AeroGeom_v2-2.STL"
+min_deflection_deg = -25.0
+max_deflection_deg = 25.0
+hinge.p1 = [417.54, 315.07, -21.88]
+hinge.p2 = [417.54, 275.0, -21.88]
+
+[[control_surfaces]]
+name = "wingtip_l"
+stl = "AeroGeom_v2 - MirrorWingtip^AeroGeom_v2-3.STL"
+min_deflection_deg = -25.0
+max_deflection_deg = 25.0
+hinge.p1 = [417.54, -275.0, -21.88]
+hinge.p2 = [417.54, -315.07, -21.88]
+
+# Leading-edge flaps, hinged along a swept line. Positive = leading edge down.
+[[control_surfaces]]
+name = "le_flap_r"
+stl = "AeroGeom_v2 - LEFlap^AeroGeom_v2-3.STL"
+min_deflection_deg = -25.0
+max_deflection_deg = 25.0
+hinge.p1 = [291.16, 194.66, -15.26]
+hinge.p2 = [131.65, 74.3, -6.9]
+
+[[control_surfaces]]
+name = "le_flap_l"
+stl = "AeroGeom_v2 - MirrorLEFlap^AeroGeom_v2-3.STL"
+min_deflection_deg = -25.0
+max_deflection_deg = 25.0
+hinge.p1 = [131.65, -74.3, -6.9]
+hinge.p2 = [291.16, -194.66, -15.26]
+
+# Outboard trailing-edge flaps. Positive = trailing edge up.
+[[control_surfaces]]
+name = "obte_flap_r"
+stl = "AeroGeom_v2 - OBTEFlap^AeroGeom_v2-3.STL"
+min_deflection_deg = -25.0
+max_deflection_deg = 25.0
+hinge.p1 = [436.69, 230.0, -22.89]
+hinge.p2 = [436.69, 150.0, -22.89]
+
+[[control_surfaces]]
+name = "obte_flap_l"
+stl = "AeroGeom_v2 - MirrorOBTEFlap^AeroGeom_v2-3.STL"
+min_deflection_deg = -25.0
+max_deflection_deg = 25.0
+hinge.p1 = [436.69, -150.0, -22.89]
+hinge.p2 = [436.69, -230.0, -22.89]
+
+# Inboard trailing-edge flaps. Positive = trailing edge up.
+[[control_surfaces]]
+name = "ibte_flap_r"
+stl = "AeroGeom_v2 - IBTEFlap^AeroGeom_v2-3.STL"
+min_deflection_deg = -25.0
+max_deflection_deg = 25.0
+hinge.p1 = [450.67, 130.0, -23.62]
+hinge.p2 = [450.67, 50.0, -23.62]
+
+[[control_surfaces]]
+name = "ibte_flap_l"
+stl = "AeroGeom_v2 - MirrorIBTEFlap^AeroGeom_v2-3.STL"
+min_deflection_deg = -25.0
+max_deflection_deg = 25.0
+hinge.p1 = [450.67, -50.0, -23.62]
+hinge.p2 = [450.67, -130.0, -23.62]
+
+# Split drag flaps: the upper is hinged at its leading edge, the lower at its trailing edge.
+# Positive = open (upper swings up, lower swings down).
+[[control_surfaces]]
+name = "upr_splitter_flap_r"
+stl = "AeroGeom_v2 - UprSplitterFlap^AeroGeom_v2-3.STL"
+min_deflection_deg = 0.0
+max_deflection_deg = 90.0
+hinge.p1 = [350.73, 230.0, -15.47]
+hinge.p2 = [350.73, 50.0, -15.47]
+
+[[control_surfaces]]
+name = "upr_splitter_flap_l"
+stl = "AeroGeom_v2 - MirrorUprSplitterFlap^AeroGeom_v2-3.STL"
+min_deflection_deg = 0.0
+max_deflection_deg = 90.0
+hinge.p1 = [350.73, -50.0, -15.47]
+hinge.p2 = [350.73, -230.0, -15.47]
+
+[[control_surfaces]]
+name = "lwr_splitter_flap_r"
+stl = "AeroGeom_v2 - LwrSplitterFlap^AeroGeom_v2-3.STL"
+min_deflection_deg = 0.0
+max_deflection_deg = 90.0
+hinge.p1 = [368.28, 230.0, -22.21]
+hinge.p2 = [368.28, 50.0, -22.21]
+
+[[control_surfaces]]
+name = "lwr_splitter_flap_l"
+stl = "AeroGeom_v2 - MirrorLwrSplitterFlap^AeroGeom_v2-3.STL"
+min_deflection_deg = 0.0
+max_deflection_deg = 90.0
+hinge.p1 = [368.28, -50.0, -22.21]
+hinge.p2 = [368.28, -230.0, -22.21]

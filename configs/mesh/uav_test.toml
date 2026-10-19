@@ -1,0 +1,39 @@
+# First test mesh for the AeroGeom_v2 UAV. Loaded by src/cfd/mesh.py (MeshSettings.from_toml).
+# Lengths in metres. Refinement level n gives cells of base_cell_size / 2**n:
+#   level 5 = 16 mm, 7 = 4 mm, 8 = 2 mm, 9 = 1 mm.
+# Deliberately moderate (expected a few million cells) to check the process before refining.
+
+# Domain, in aircraft lengths (0.52 m): about 10 m upstream, 21 m downstream, 10 m to each side.
+upstream_lengths = 20.0
+downstream_lengths = 40.0
+lateral_lengths = 20.0
+base_cell_size = 0.512
+
+# Surface refinement (min, max): min everywhere, max where the surface curves sharply (leading edges).
+fixed_body_level = [7, 8]        # 4-2 mm on the main body
+control_surface_level = [8, 9]   # 2-1 mm on control surfaces (they are only ~7 mm thick)
+feature_level = 9                # 1 mm along sharp edges
+feature_included_angle = 150.0
+resolve_feature_angle = 30.0
+n_cells_between_levels = 3
+
+# Volume refinement: 16 mm cells around the aircraft and in the near wake (leading-edge vortices).
+near_level = 5
+near_padding_lengths = 0.3
+wake_level = 5
+wake_lengths = 2.0
+
+# Prism layers on every wall, sized relative to the local surface cell.
+n_layers = 5
+layer_expansion_ratio = 1.2
+final_layer_thickness = 0.5
+min_layer_thickness = 0.1
+
+max_local_cells = 5_000_000
+max_global_cells = 100_000_000
+
+# Pass/fail limits applied by src/cfd/mesh_report.py after checkMesh.
+[acceptance]
+max_non_orthogonality = 70.0
+max_skewness = 4.0
+min_layer_thickness_percent = 80.0

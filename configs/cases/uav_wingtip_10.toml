@@ -1,0 +1,11 @@
+# Case file: submit with   sbatch hpc/mesh_case.slurm configs/cases/uav_wingtip_10.toml
+# The file name (without .toml) is the case name. Paths are relative to the repo root.
+
+description = "First mesh test: both wingtips at +10 deg (trailing edge up), everything else at 0"
+geometry = "cad/uav/geometry.toml"
+mesh = "configs/mesh/uav_test.toml"
+
+# Control surface deflections in degrees; surfaces not listed stay at 0. Names and limits are in the geometry.
+[deflections_deg]
+wingtip_r = 10.0
+wingtip_l = 10.0

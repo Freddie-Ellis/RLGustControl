@@ -1,3 +1,7 @@
 # SLURM/shell scripts run on Linux HPC; keep LF endings
 *.slurm text eol=lf
 *.sh text eol=lf
+# CAD exports: never convert line endings
+*.stl binary
+*.STL binary
+*.STEP binary

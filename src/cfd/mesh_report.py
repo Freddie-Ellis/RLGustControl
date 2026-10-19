@@ -4,7 +4,8 @@ The Slurm job runs this after meshing. It writes <case>/mesh_report.json, prints
 status 1 if the mesh fails, so the job is marked as failed.
 
 What is checked:
-    - checkMesh's own verdict ("Mesh OK." or "Failed N mesh checks."), with the reasons it gives;
+    - checkMesh's own verdict ("Mesh OK." or "Failed N mesh checks."), with the reasons it gives. Failures of
+      the extra checks that only `-allGeometry` runs (concave cells, small determinant, ...) are warnings;
     - maximum non-orthogonality and skewness against the limits in the mesh settings' [acceptance] table;
     - prism-layer coverage per wall from snappyHexMesh's final layer table (low coverage is a warning, since
       layers often collapse at sharp trailing edges without making the mesh unusable).
@@ -23,6 +24,10 @@ from src.cfd.geometry import StrictModel
 from src.cfd.mesh import MeshAcceptance
 
 _NUMBER = r"([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)"
+
+# Checks that only run with `checkMesh -allGeometry`. They are stricter than the solver needs; in particular
+# every snappyHexMesh mesh has "concave" polyhedral cells where refinement levels meet. Reported as warnings.
+_STRICT_CHECKS = ("concave cells", "concave faces", "determinant", "twist", "flatness")
 
 
 class LayerCoverage(StrictModel):
@@ -68,30 +73,38 @@ def _read(path: Path) -> str:
 
 
 def parse_layer_table(snappy_log: str) -> list[LayerCoverage]:
-    """Parse the last layer summary table in a snappyHexMesh log, which looks like:
+    """Parse the final layer summary table in a snappyHexMesh log: what was actually achieved.
 
-        patch       faces    layers   overall thickness
-                                      [m]       [%]
-        -----       -----    ------   ---       ---
-        main_body   123456   4.87     0.00123   91.2
+    OpenFOAM v2506 prints the requested and achieved layer counts (6 columns):
+        patch       faces    layers        overall thickness
+                             target   mesh     [m]       [%]
+        -----       -----    -----    ----     ---       ---
+        main_body   62353    5        3.88     0.00266   81.6
+    Older versions print only the achieved count (5 columns: patch, faces, layers, [m], [%]).
+
+    snappyHexMesh also prints a table of the *requested* layers earlier on (patch, faces, layers, near-wall
+    and overall thickness in metres), so the final table is told apart by the "[%]" in its header.
     """
     rows: list[LayerCoverage] = []
     lines = snappy_log.splitlines()
     for start in (i for i, line in enumerate(lines) if line.strip().startswith("-----")):
+        if "[%]" not in "".join(lines[max(0, start - 2):start]):
+            continue
         table: list[LayerCoverage] = []
         for line in lines[start + 1:]:
             parts = line.split()
-            if len(parts) != 5:
+            if len(parts) not in (5, 6):
                 break
+            # The last three columns are always: achieved layers, thickness [m], thickness [%].
             try:
                 table.append(LayerCoverage(
-                    patch=parts[0], faces=int(parts[1]), mean_layers=float(parts[2]),
-                    thickness_m=float(parts[3]), thickness_percent=float(parts[4]),
+                    patch=parts[0], faces=int(parts[1]), mean_layers=float(parts[-3]),
+                    thickness_m=float(parts[-2]), thickness_percent=float(parts[-1]),
                 ))
             except ValueError:
                 break
         if table:
-            rows = table  # keep the last table: the final result after all layer iterations
+            rows = table  # keep the last one, in case the log holds several runs
     return rows
 
 
@@ -114,8 +127,13 @@ def build_report(case_dir: Path, acceptance: MeshAcceptance) -> MeshReport:
         if failed_checks is None and check:
             failures.append("checkMesh did not finish (no 'Mesh OK.' or 'Failed N mesh checks.')")
     messages = [line.strip().lstrip("*") for line in check.splitlines() if line.strip().startswith("***")]
-    if failed_checks:
-        failures.append(f"checkMesh failed {failed_checks} check(s): " + "; ".join(messages))
+    for message in messages:
+        if any(phrase in message.lower() for phrase in _STRICT_CHECKS):
+            warnings.append(f"checkMesh (strict check): {message}")
+        else:
+            failures.append(f"checkMesh: {message}")
+    if failed_checks and not messages:
+        failures.append(f"checkMesh failed {failed_checks} check(s)")
 
     # Quality metrics.
     max_non_ortho = _first(rf"Mesh non-orthogonality Max:\s*{_NUMBER}", check)

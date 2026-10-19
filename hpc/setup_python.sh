@@ -35,6 +35,7 @@ source "${venv}/bin/activate"
 pip install --upgrade pip
 pip install torch --index-url https://download.pytorch.org/whl/cpu
 pip install "pydantic>=2.13"
+pip install numpy   # not used by src/cfd, but torch warns on import without it
 echo "${python_module}" > "${venv}/python_module"
 
 python -c "import torch, pydantic; print(f'torch {torch.__version__}, pydantic {pydantic.__version__}: OK')"

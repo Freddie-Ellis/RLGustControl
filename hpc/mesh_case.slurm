@@ -34,8 +34,13 @@
 OF_VERSION="v2506"
 
 module purge
+# OpenFOAM's bashrc treats any arguments it sees as extra settings files and sources them, and a sourced
+# file inherits this script's arguments, so hide the job's argument (the case file) while it loads.
+job_args=("$@")
+set --
 # OpenFOAM's bashrc references unset variables, so enable strict mode after sourcing it.
 source "/iridisfs/i6software/openfoam/${OF_VERSION}/OpenFOAM-${OF_VERSION}/etc/bashrc"
+set -- "${job_args[@]}"
 set -eo pipefail
 
 # Resolve the repo root so the job works whichever directory it was submitted from.

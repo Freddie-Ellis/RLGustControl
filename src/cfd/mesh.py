@@ -333,7 +333,9 @@ addLayersControls
 meshQualityControls
 {{
     #include "meshQualityDict"
-    relaxed {{ maxNonOrtho 75; }}   // looser limit allowed after nRelaxedIter layer iterations
+    // Looser limit allowed after nRelaxedIter layer iterations; kept at the acceptance limit so snappyHexMesh
+    // never produces a mesh that mesh_report.py would then fail.
+    relaxed {{ maxNonOrtho {s.acceptance.max_non_orthogonality:g}; }}
 }}
 
 writeFlags (scalarLevels layerSets layerFields);

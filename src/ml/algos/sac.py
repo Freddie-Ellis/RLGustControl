@@ -6,8 +6,8 @@ Three things learn, each with its own optimiser:
     alpha                   "how random should I stay?"           tuned so the policy keeps a target entropy
 
 `SAC.update` is one gradient step on a batch and knows nothing about where the batch came from. `SAC.train` is the
-synchronous simulation loop (step env -> store -> update). The decoupled tunnel learner will call `update` on
-batches from tunnel episode files instead.
+synchronous simulation loop (step env -> store -> update). The decoupled tunnel learner
+(`src/ml/distributed/learner.py`) calls `update` on batches from tunnel episode files instead.
 """
 
 import copy

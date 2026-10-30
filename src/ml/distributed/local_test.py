@@ -31,7 +31,7 @@ from src.ml.run_config import RunConfig
 from src.ml.runs import RunDir, make_env
 
 # ----- settings -----
-CONFIG_FILE = Path("configs/sac_tunnel_mock.toml")  # algo must be SAC
+CONFIG_FILE = Path("configs/sac_tunnel_mock.toml")
 EPISODES = 70  # actor episodes before stopping
 N_ENVS = 1  # actor parallel envs (sim envs only; the tunnel is always 1)
 BASELINE_EPISODES = 3  # zero-deflection episodes to compare against (0 to skip)

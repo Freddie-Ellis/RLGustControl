@@ -25,7 +25,7 @@ class Trace:
     obs: Tensor  # [T, N, obs_dim] observation the action was chosen from
     action: Tensor  # [T, N, act_dim]
     reward: Tensor  # [T, N]
-    extras: dict[str, Tensor] = field(default_factory=dict)  # env-specific signals, each [T, N]7
+    extras: dict[str, Tensor] = field(default_factory=dict)  # env-specific signals, each [T, N]
 
 
 class Env(ABC):

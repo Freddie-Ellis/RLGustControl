@@ -17,12 +17,6 @@ class Config(BaseModel):
 
     # compute
     device: Literal["cpu", "cuda"] = "cuda" if torch.cuda.is_available() else "cpu"
-    default_seed: int = 0
-
-    # training defaults
-    gamma: float = 0.98
-    lr: float = 3e-4
-    n_envs: int = 64
 
     @property
     def torch_device(self) -> torch.device:

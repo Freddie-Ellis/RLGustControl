@@ -23,7 +23,6 @@ from torch.distributions import Normal
 
 LOG_STD_MIN = -20.0  # std ~ 2e-9: effectively deterministic, also prevents bang bang control
 LOG_STD_MAX = 2.0  # std ~ 7.4: already saturates tanh, more is pointless, good to clamp so the actor doesn't blow up and NaN the critic when given garbage gradients in early training.
-ATANH_EPS = 1e-6  # keeps atanh finite when a stored action sits exactly on +-1
 
 
 def tanh_log_det(u: Tensor) -> Tensor:

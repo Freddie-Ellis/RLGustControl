@@ -1,6 +1,6 @@
 """Train from a config file and save the run.
 
-    uv run python -m src.ml.train configs/ppo_gust_dummy.toml [--name NAME]
+    uv run python -m src.ml.train configs/sac_gust_dummy.toml [--name NAME]
 
 The first line printed is `RUN_DIR <path>` so a launcher (the UI) can find the run.
 Create a file called STOP in the run directory to stop early; weights are still saved.
@@ -13,7 +13,7 @@ from pathlib import Path
 import torch
 
 from src.config import CONFIG
-from src.ml.registry import build_algo
+from src.ml.algos.sac import SAC
 from src.ml.run_config import RunConfig
 from src.ml.runs import RunDir, make_env, make_policy
 
@@ -27,7 +27,7 @@ def train(cfg: RunConfig, runs_root: Path = CONFIG.runs_dir) -> RunDir:
     torch.manual_seed(cfg.seed)  # policy sampling and minibatch shuffling use the global RNG
     env = make_env(cfg, n_envs=cfg.algo.n_envs, seed=cfg.seed)
     policy = make_policy(cfg)
-    algo = build_algo(cfg.algo)
+    sac = SAC(cfg.algo)
     status = run.read_status()
 
     def on_iteration(it: int, metrics: dict[str, float]) -> bool:
@@ -41,7 +41,7 @@ def train(cfg: RunConfig, runs_root: Path = CONFIG.runs_dir) -> RunDir:
         return not run.stop_requested()
 
     try:
-        algo.train(env, policy, on_iteration)
+        sac.train(env, policy, on_iteration)
         status.state = "stopped" if run.stop_requested() else "done"
     except KeyboardInterrupt:
         status.state = "stopped"

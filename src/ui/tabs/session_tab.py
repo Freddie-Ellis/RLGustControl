@@ -6,12 +6,14 @@ Everything comes from files the actor and learner already write, so it works for
 A learner and actor launched from here each get a live console window.
 """
 
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
 import pyqtgraph as pg
 from qtpy.QtCore import QRectF, Qt, QTimer
 from qtpy.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QFileDialog,
     QHBoxLayout,
@@ -24,7 +26,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from src.config import ROOT
+from src.config import CONFIG, ROOT
 from src.ml.distributed import actor, learner
 from src.ml.distributed.files import stop_path
 from src.ml.distributed.session import EpisodeSummary, SessionReader
@@ -58,6 +60,8 @@ class SessionTab(QWidget):
         launch_learner.clicked.connect(self._launch_learner)
         launch_actor = QPushButton("Launch actor")
         launch_actor.clicked.connect(self._launch_actor)
+        self.profile = QCheckBox("Profile")
+        self.profile.setToolTip(f"Run launched processes under cProfile; stats go to {CONFIG.profiles_dir}")
         browse = QPushButton("Browse…")
         browse.clicked.connect(self._browse)
         logs = QPushButton("Logs")
@@ -72,7 +76,7 @@ class SessionTab(QWidget):
         top = QHBoxLayout()
         top.addWidget(QLabel("Shared folder"))
         top.addWidget(self.folder, 1)
-        for b in (launch_learner, launch_actor, logs, browse, watch, self.stop_btn):
+        for b in (self.profile, launch_learner, launch_actor, logs, browse, watch, self.stop_btn):
             top.addWidget(b)
 
         self.actor_status = QLabel(_dot(IDLE, "Actor: not watching"))
@@ -202,7 +206,8 @@ class SessionTab(QWidget):
                 cfg = cfg.model_copy(update={"name": learner.RUN_NAME})
             self.learner_console.run(
                 learner.run_learner, cfg, shared,
-                seed_from=learner.SEED_FROM, max_updates=learner.MAX_UPDATES, cwd=str(ROOT),
+                seed_from=learner.SEED_FROM, max_updates=learner.MAX_UPDATES,
+                cwd=str(ROOT), profile_to=self._profile_path("learner"),
             )
 
     def _launch_actor(self) -> None:
@@ -211,8 +216,14 @@ class SessionTab(QWidget):
         if shared is not None:
             self.actor_console.run(
                 actor.run_actor, shared,
-                n_envs=actor.N_ENVS, eval_every=actor.EVAL_EVERY, max_episodes=actor.MAX_EPISODES, cwd=str(ROOT),
+                n_envs=actor.N_ENVS, eval_every=actor.EVAL_EVERY, max_episodes=actor.MAX_EPISODES,
+                cwd=str(ROOT), profile_to=self._profile_path("actor"),
             )
+
+    def _profile_path(self, name: str) -> Path | None:
+        if not self.profile.isChecked():
+            return None
+        return CONFIG.profiles_dir / f"{name}_{datetime.now():%Y%m%d-%H%M%S}.prof"
 
     def _shared_for(self, console: TelemetryConsole) -> Path | None:
         """The shared folder to launch on, or None (with the reason in the console) if launching would be pointless."""

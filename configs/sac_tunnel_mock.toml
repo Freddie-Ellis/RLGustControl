@@ -29,11 +29,9 @@ n_surfaces = 12
 daq_rate_hz = 1000.0
 
 [policy]
-kind = "squashed_gaussian"
 hidden = 256
 
 [algo]
-kind = "sac"
 iterations = 20
 n_envs = 1
 warmup_transitions = 1000

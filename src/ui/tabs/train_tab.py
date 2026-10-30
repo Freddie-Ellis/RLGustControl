@@ -141,7 +141,7 @@ class TrainTab(QWidget):
             msgs = [f"{'.'.join(str(p) for p in err['loc'])}: {err['msg']}" for err in e.errors()]
             self._set_validation(False, "\n".join(msgs))
             return None
-        self._set_validation(True, f"Valid: run '{cfg.name}', {cfg.algo.kind} for {cfg.algo.iterations} iterations")
+        self._set_validation(True, f"Valid: run '{cfg.name}', SAC on {cfg.env.kind} for {cfg.algo.iterations} iterations")
         return cfg
 
     def is_running(self) -> bool:

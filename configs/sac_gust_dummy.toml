@@ -17,12 +17,10 @@ act_limit = 1.0  # the squashed policy outputs (-1, 1)
 action_cost = 0.01
 
 [policy]
-kind = "squashed_gaussian"
 hidden = 256
 init_log_std = -0.5
 
 [algo]
-kind = "sac"
 iterations = 40
 n_envs = 16
 gamma = 0.99

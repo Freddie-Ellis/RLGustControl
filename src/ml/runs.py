@@ -19,8 +19,8 @@ from pydantic import BaseModel
 
 from src.config import CONFIG
 from src.ml.envs.base import Env
-from src.ml.policies.base import Policy
-from src.ml.registry import build_env, build_policy
+from src.ml.policy import SquashedGaussianPolicy
+from src.ml.registry import build_env
 from src.ml.run_config import RunConfig
 
 type RunState = Literal["running", "done", "stopped", "failed"]
@@ -135,9 +135,9 @@ def make_env(cfg: RunConfig, n_envs: int, seed: int | None = None) -> Env:
     return build_env(cfg.env, n_envs=n_envs, seed=seed)
 
 
-def make_policy(cfg: RunConfig) -> Policy:
+def make_policy(cfg: RunConfig) -> SquashedGaussianPolicy:
     env = make_env(cfg, n_envs=1)
-    return build_policy(cfg.policy, env.obs_dim, env.act_dim)
+    return SquashedGaussianPolicy(env.obs_dim, env.act_dim, hidden=cfg.policy.hidden, init_log_std=cfg.policy.init_log_std)
 
 
 @dataclass
@@ -145,7 +145,7 @@ class LoadedRun:
     run: RunDir
     config: RunConfig
     status: RunStatus
-    policy: Policy
+    policy: SquashedGaussianPolicy
     metrics: pl.DataFrame
 
 

@@ -26,7 +26,7 @@ from src.ml.distributed.files import (
     stop_path,
 )
 from src.ml.envs.wind_tunnel import WindTunnelParams
-from src.ml.run_config import RunConfig, SACConfig
+from src.ml.run_config import RunConfig
 from src.ml.runs import RunDir, RunStatus, make_env
 
 type EpisodeKind = Literal["warmup", "train", "eval"]
@@ -133,7 +133,7 @@ class SessionReader:
 
     @property
     def warmup_transitions(self) -> int | None:
-        return self.cfg.algo.warmup_transitions if self.cfg and isinstance(self.cfg.algo, SACConfig) else None
+        return self.cfg.algo.warmup_transitions if self.cfg else None
 
     @property
     def target_dt(self) -> float | None:

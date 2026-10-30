@@ -6,6 +6,8 @@ University Part IV GDP: online estimation and reinforcement-learning-based contr
 ## Modelling approach
 Combine Physics Augmented Auto Encoders (PA-AE), LSTM networks and RL to control the wing in extreme aerodynamic conditions.
 
+RL is SAC only, with one policy (`SquashedGaussianPolicy` in `src/ml/policy.py`). Only the environment is selectable in a run config. Don't add an algorithm or policy choice back. (`src/ml/tutorial/` is standalone learning material with its own PPO.)
+
 ## Code structure
 - Python is the main language (`main.py`, Python >= 3.14, managed with uv; `pyproject.toml` / `uv.lock`).
 - `ruststuff/` is a Rust backend compiled into a Python module with maturin. It holds performance-critical code while keeping access to Python libraries. Type stubs live in `ruststuff.pyi`; keep them in sync with the Rust API.

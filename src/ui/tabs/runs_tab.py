@@ -24,7 +24,7 @@ from src.ml.runs import RunSummary, list_runs
 from src.ui.plotting import series_pen
 from src.ui.utils.dynamic_vb import DynamicViewBox
 
-COLUMNS = ["Run", "Status", "Env", "Policy", "Algo", "Iters", "Final return"]
+COLUMNS = ["Run", "Status", "Env", "Iters", "Final return"]
 
 
 class RunsTab(QWidget):
@@ -109,8 +109,7 @@ class RunsTab(QWidget):
         for row, s in enumerate(self._runs):
             final = "" if s.status.final_return is None else f"{s.status.final_return:.3f}"
             values = [
-                s.run.name, s.status.state, s.config.env.kind, s.config.policy.kind,
-                s.config.algo.kind, str(s.status.iterations_done), final,
+                s.run.name, s.status.state, s.config.env.kind, str(s.status.iterations_done), final,
             ]
             for col, v in enumerate(values):
                 self.table.setItem(row, col, QTableWidgetItem(v))

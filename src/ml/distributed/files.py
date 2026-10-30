@@ -23,7 +23,7 @@ import torch
 from pydantic import BaseModel
 from torch import Tensor
 
-from src.ml.policies.base import Policy
+from src.ml.policy import SquashedGaussianPolicy
 from src.ml.run_config import RunConfig
 
 TRANSITION_COLUMNS = ("obs", "priv", "act", "rew", "next_obs", "next_priv", "done")
@@ -127,7 +127,7 @@ def read_episode(parquet: Path) -> tuple[EpisodeMetaData, pl.DataFrame]:
 
 
 # ----- weights -----
-def write_weights(shared: Path, version: int, policy: Policy) -> Path:
+def write_weights(shared: Path, version: int, policy: SquashedGaussianPolicy) -> Path:
     """Save CPU copies of the weights, so the tunnel PC (no GPU) can load them."""
     path = weights_dir(shared) / f"policy_v{version:06d}.pt"
     torch.save({k: v.detach().cpu() for k, v in policy.state_dict().items()}, _tmp(path))

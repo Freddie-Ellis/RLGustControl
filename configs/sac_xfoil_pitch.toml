@@ -1,4 +1,5 @@
-name = "test"
+# SAC on the XFOIL pitch problem. Omitted keys use the defaults in src/ml/run_config.py.
+name = "sac_xfoil_pitch"
 seed = 42
 
 [env]
@@ -24,20 +25,8 @@ xfoil_path = "C:\\XFOIL6.99\\xfoil.exe"
 timeout_s = 30.0
 
 [policy]
-kind = "gaussian_mlp"
-hidden = 64
-init_log_std = -0.5
+hidden = 256
 
 [algo]
-kind = "ppo"
 iterations = 60
-n_envs = 64
-gamma = 0.98
-lam = 0.95
-clip = 0.2
-epochs = 8
-minibatch = 1024
-lr = 0.0003
-ent_coef = 0.0
-vf_coef = 0.5
-max_grad_norm = 0.5
+n_envs = 16

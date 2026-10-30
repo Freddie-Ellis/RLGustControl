@@ -43,6 +43,7 @@ NUMBER, RED, GREEN = "#a9c8f0", "#ff6e6e", "#9fd49f"
 
 ERROR_WORDS = re.compile(r"\b(?:Traceback|Error|Exception|failed|not written)\b")
 NUMBER_TOKEN = re.compile(r"(?<![\w.])[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?\b")
+INTERPRETER_PID = re.compile(r"^interpreter pid (\d+)")  # first line from run_callable
 MAX_LINES = 5000
 TICK_MS = 500
 SERIF = "Cambria"
@@ -111,6 +112,7 @@ class TelemetryConsole(QWidget):
         self._buffers: dict[Channel, str] = {"OUT": "", "ERR": ""}
         self._t0 = time.monotonic()
         self._n_lines = 0
+        self._pid: int | None = None  # the interpreter's own PID, if it reported one
         self._trace: deque[float] = deque(maxlen=300)
         self._state = "idle"
         self._state_colour = DIM
@@ -208,6 +210,7 @@ class TelemetryConsole(QWidget):
             self.system("already running", RED)
             return
         self._t0 = time.monotonic()
+        self._pid = None
         self._trace.clear()
         self._buffers = {"OUT": "", "ERR": ""}
         if self.text.blockCount() > 1:
@@ -231,9 +234,18 @@ class TelemetryConsole(QWidget):
         self._timer.start(TICK_MS)
         proc.start(program, args)
 
-    def run(self, fn: Callable[..., object], /, *args: object, cwd: str = ".", **kwargs: object) -> None:
+    def run(
+        self,
+        fn: Callable[..., object],
+        /,
+        *args: object,
+        cwd: str = ".",
+        profile_to: Path | None = None,
+        **kwargs: object,
+    ) -> None:
         """Call `fn(*args, **kwargs)` in a new Python process and show its output. `fn` must be a top-level function
-        (it is pickled by reference) and the arguments picklable; both are checked here, before anything starts."""
+        (it is pickled by reference) and the arguments picklable; both are checked here, before anything starts.
+        With `profile_to`, the call runs under cProfile and the stats are saved there when it finishes."""
         if self.is_running():
             self.system("already running", RED)
             return
@@ -245,8 +257,10 @@ class TelemetryConsole(QWidget):
         with tempfile.NamedTemporaryFile("wb", suffix=".pkl", delete=False) as f:
             f.write(job)  # the child deletes it once loaded
         call = ", ".join([*(_short(a) for a in args), *(f"{k}={_short(v)}" for k, v in kwargs.items())])
-        self.start(sys.executable, ["-u", "-m", "src.ui.utils.run_callable", f.name], cwd,
-                   description=f"{fn.__module__}.{fn.__qualname__}({call})")
+        argv = ["-u", "-m", "src.ui.utils.run_callable", f.name, *([str(profile_to)] if profile_to else [])]
+        self.start(sys.executable, argv, cwd, description=f"{fn.__module__}.{fn.__qualname__}({call})")
+        if profile_to is not None:
+            self.system(f"profiling to {profile_to} (written on exit, so stop with STOP rather than killing)")
 
     def kill(self, wait_ms: int = 2000) -> None:
         if self._process is not None and self.is_running():
@@ -287,6 +301,9 @@ class TelemetryConsole(QWidget):
     def _emit_line(self, channel: Channel, line: str) -> None:
         if not line.strip():
             return
+        if self._pid is None and (m := INTERPRETER_PID.match(line)):
+            self._pid = int(m.group(1))
+            self._refresh_header()
         is_error = channel == "ERR" or ERROR_WORDS.search(line) is not None
         self._append(channel, _span(line, RED) if is_error else _highlight(line, TEXT))
         self._n_lines += 1
@@ -334,8 +351,9 @@ class TelemetryConsole(QWidget):
     def _refresh_header(self) -> None:
         running = self.is_running()
         parts = [f'<span style="color:{self._state_colour}">{self._state}</span>']
-        if running and self._process is not None and self._process.processId():
-            parts.append(f"pid {self._process.processId()}")
+        pid = self._pid or (self._process.processId() if self._process is not None else 0)
+        if running and pid:
+            parts.append(f"pid {pid}")
         if self._process is not None:
             parts.append(f"elapsed {_hms(time.monotonic() - self._t0)}")
         parts.append(f"{self._n_lines} lines")

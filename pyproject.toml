@@ -7,6 +7,7 @@ requires-python = ">=3.14"
 dependencies = [
     "matplotlib>=3.11.1",
     "maturin>=1.14.1",
+    "neurolume[torch]",
     "polars>=1.44.2",
     "pydantic>=2.13.5",
     "pyqtgraph>=0.14.0",
@@ -34,3 +35,4 @@ ruststuff = [
   { path = "ruststuff/target/wheels/ruststuff-0.1.0-cp314-cp314-win_amd64.whl", marker = "sys_platform == 'win32'" },
   { path = "ruststuff/target/wheels/ruststuff-0.1.0-cp314-cp314-manylinux_2_28_x86_64.whl", marker = "sys_platform == 'linux'" },
 ]
+neurolume = { path = "../Neurolume/neurolume", editable = true }

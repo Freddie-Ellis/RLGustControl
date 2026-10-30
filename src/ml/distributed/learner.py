@@ -39,7 +39,6 @@ from src.ml.distributed.files import (
     write_learner_state,
     write_weights,
 )
-from src.ml.policies.base import SACPolicy
 from src.ml.run_config import RunConfig, SACConfig
 from src.ml.runs import RunDir, make_env, make_policy
 
@@ -57,8 +56,6 @@ IDLE_SLEEP_S = 0.2  # wait when there is no data and no update budget
 
 class Learner:
     def __init__(self, cfg: RunConfig, shared: Path, run: RunDir) -> None:
-        if not isinstance(cfg.algo, SACConfig):
-            raise TypeError(f"the learner trains SAC, but the config's algo is {cfg.algo.kind!r}")
         self.cfg = cfg
         self.algo_cfg: SACConfig = cfg.algo
         self.shared = shared
@@ -67,9 +64,7 @@ class Learner:
         # Building the env only reads its dimensions; a wind tunnel env opens no hardware until reset().
         env = make_env(cfg, n_envs=1)
         self.priv_dim = env.priv_dim if self.algo_cfg.critic_privileged else 0
-        policy = make_policy(cfg)
-        assert isinstance(policy, SACPolicy)  # guaranteed by RunConfig's policy/algo check
-        self.policy = policy
+        self.policy = make_policy(cfg)
         self.sac = SAC(self.algo_cfg)
         self.sac.setup(self.policy, self.priv_dim)
         self.version = 0

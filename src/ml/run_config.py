@@ -1,14 +1,13 @@
 """Per-experiment configuration. One `RunConfig` fully describes how a run was built and trained.
 
-Each component config has a `kind` tag that the registry uses to pick the class. To add a second
-env/policy/algo, write its config model and turn the alias below into a tagged union, e.g.
-    type EnvConfig = Annotated[GustLiftEnvConfig | WingEnvConfig, Field(discriminator="kind")]
+Every run trains a `SquashedGaussianPolicy` with SAC; only the environment varies. Each env config has a `kind` tag
+that the registry uses to pick the env class.
 """
 
 import json
 import tomllib
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -47,46 +46,16 @@ type EnvConfig = Annotated[
 ]
 
 
-# ----- policies -----
-class GaussianMLPConfig(StrictModel):
-    kind: Literal["gaussian_mlp"] = "gaussian_mlp"
-    hidden: int = 64
-    init_log_std: float = -0.5
-
-
-class SquashedGaussianConfig(StrictModel):
-    kind: Literal["squashed_gaussian"] = "squashed_gaussian"
+# ----- policy -----
+class PolicyConfig(StrictModel):
     hidden: int = 256
     init_log_std: float = -0.5
 
 
-type PolicyConfig = Annotated[GaussianMLPConfig | SquashedGaussianConfig, Field(discriminator="kind")]
-
-
-# ----- algorithms -----
-class AlgoConfigBase(StrictModel):
-    """Fields every algorithm has. `train.py` and the UI only rely on these, so they work for any algorithm."""
-    iterations: int = 60  # one iteration = one episode in every parallel env, then a metrics row
-    n_envs: int = 64  # parallel sim envs (always 1 in the tunnel)
-
-
-class PPOConfig(AlgoConfigBase):
-    kind: Literal["ppo"] = "ppo"
-    gamma: float = 0.98
-    lam: float = 0.95
-    clip: float = 0.2
-    epochs: int = 8
-    minibatch: int = 1024
-    lr: float = 3e-4
-    ent_coef: float = 0.0
-    vf_coef: float = 0.5
-    max_grad_norm: float = 0.5
-
-
-class SACConfig(AlgoConfigBase):
-    kind: Literal["sac"] = "sac"
-    iterations: int = 100
-    n_envs: int = 16
+# ----- SAC -----
+class SACConfig(StrictModel):
+    iterations: int = 100  # one iteration = one episode in every parallel env, then a metrics row
+    n_envs: int = 16  # parallel sim envs (always 1 in the tunnel)
     gamma: float = 0.99  # discount; horizon of ~1 / (1 - gamma) = 100 control steps
     tau: float = 0.005  # target critic Polyak rate
     batch_size: int = 256
@@ -102,15 +71,6 @@ class SACConfig(AlgoConfigBase):
     critic_dropout: float = 0.0  # DroQ uses ~0.01 with updates_per_step ~ 20
     critic_layer_norm: bool = True
     critic_privileged: bool = True  # give the critic env.privileged() (e.g. balance loads); False = same view as actor
-
-
-type AlgoConfig = Annotated[PPOConfig | SACConfig, Field(discriminator="kind")]
-
-# Which policy kinds each algorithm can train (mirrors PPOPolicy / SACPolicy in policies/base.py).
-COMPATIBLE_POLICIES: dict[str, set[str]] = {
-    "ppo": {"gaussian_mlp"},
-    "sac": {"squashed_gaussian"},
-}
 
 
 # ----- decoupled actor / learner -----
@@ -129,19 +89,25 @@ class RunConfig(StrictModel):
     name: str = "run"
     seed: int = 0
     env: EnvConfig = GustLiftEnvConfig()
-    policy: PolicyConfig = GaussianMLPConfig()
-    algo: AlgoConfig = PPOConfig()
+    policy: PolicyConfig = PolicyConfig()
+    algo: SACConfig = SACConfig()
     distributed: DistributedConfig = DistributedConfig()
 
-    @model_validator(mode="after")
-    def _check_policy_suits_algo(self) -> RunConfig:
-        """Fail when the config is loaded, not after the tunnel is spun up and the first update crashes."""
-        allowed = COMPATIBLE_POLICIES[self.algo.kind]
-        if self.policy.kind not in allowed:
-            raise ValueError(
-                f"algo {self.algo.kind!r} cannot train policy {self.policy.kind!r}; use one of {sorted(allowed)}"
-            )
-        return self
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_legacy_kinds(cls, data: Any) -> Any:
+        """Configs saved before the project went SAC-only tag `policy` and `algo` with a `kind`. Drop the tags so
+        old SAC runs still load; old PPO runs fail here with a clear message."""
+        if not isinstance(data, dict):
+            return data
+        data = dict(data)
+        for section, expected in (("policy", "squashed_gaussian"), ("algo", "sac")):
+            if isinstance(part := data.get(section), dict) and "kind" in part:
+                kind = part["kind"]
+                if kind != expected:
+                    raise ValueError(f"{section} kind {kind!r} is no longer supported; every run uses {expected!r}")
+                data[section] = {k: v for k, v in part.items() if k != "kind"}
+        return data
 
     @classmethod
     def from_toml(cls, path: Path) -> RunConfig:

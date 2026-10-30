@@ -12,6 +12,7 @@ batches from tunnel episode files instead.
 
 import copy
 import math
+from collections.abc import Callable
 from typing import Any
 
 import torch
@@ -19,11 +20,13 @@ import torch.nn.functional as F
 from torch import Tensor, nn
 
 from src.config import CONFIG
-from src.ml.algos.base import Algorithm, Callback
 from src.ml.algos.replay import Batch, ReplayBuffer
 from src.ml.envs.base import Env
-from src.ml.policies.base import SACPolicy
+from src.ml.policy import SquashedGaussianPolicy
 from src.ml.run_config import SACConfig
+
+type Callback = Callable[[int, dict[str, float]], bool]
+"""Called after every iteration with (iteration, metrics). Return False to stop training early."""
 
 
 def critic_mlp(in_dim: int, hidden: int, dropout: float, layer_norm: bool) -> nn.Sequential:
@@ -67,18 +70,18 @@ class TwinQ(nn.Module):
         return torch.min(q1, q2)
 
 
-class SAC(Algorithm[SACPolicy]):
+class SAC:
     def __init__(self, cfg: SACConfig) -> None:
         self.cfg = cfg
         self.device = CONFIG.torch_device
         # Built in `setup` once the env's dimensions are known.
-        self.policy: SACPolicy
+        self.policy: SquashedGaussianPolicy
         self.critic: TwinQ
         self.critic_target: TwinQ
         self.log_alpha: Tensor
         self.target_entropy: float
 
-    def setup(self, policy: SACPolicy, priv_dim: int) -> None:
+    def setup(self, policy: SquashedGaussianPolicy, priv_dim: int) -> None:
         """Create the critics, target critics, alpha and the three optimisers around `policy`.
 
         `priv_dim` is the size of the critic-only input (0 gives the critic the same view as the actor).
@@ -172,7 +175,7 @@ class SAC(Algorithm[SACPolicy]):
             "q_mean": q1.mean().item(),
         }
 
-    def train(self, env: Env, policy: SACPolicy, callback: Callback | None = None) -> None:
+    def train(self, env: Env, policy: SquashedGaussianPolicy, callback: Callback | None = None) -> None:
         """Synchronous simulation loop. One iteration = one episode in every parallel env, the same unit as a tunnel
         episode (where new weights are swapped in between episodes)."""
         c = self.cfg

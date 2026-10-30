@@ -13,6 +13,7 @@ class Config(BaseModel):
     # paths
     runs_dir: Path = ROOT / "runs"
     configs_dir: Path = ROOT / "configs"
+    profiles_dir: Path = ROOT / "profiles"
 
     # compute
     device: Literal["cpu", "cuda"] = "cuda" if torch.cuda.is_available() else "cpu"

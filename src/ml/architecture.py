@@ -11,26 +11,12 @@ import sys
 from pathlib import Path
 
 import neurolume
-from torch import Tensor, nn
 
 from src.ml.algos.sac import TwinQ
 from src.ml.run_config import RunConfig
 from src.ml.runs import make_env, make_policy
 
 DEFAULT_CONFIG = Path("configs/sac_tunnel_mock.toml")
-
-
-class _TwinQHeads(nn.Module):
-    """`TwinQ` after its concat: [obs, priv, act] -> (Q1, Q2). Neurolume links only into a network's first input,
-    so the concat is drawn as its own block feeding this single input."""
-
-    def __init__(self, critic: TwinQ) -> None:
-        super().__init__()
-        self.q1 = critic.q1
-        self.q2 = critic.q2
-
-    def forward(self, x: Tensor) -> tuple[Tensor, Tensor]:
-        return self.q1(x).squeeze(-1), self.q2(x).squeeze(-1)
 
 
 def build_system(cfg: RunConfig) -> neurolume.System:
@@ -40,7 +26,6 @@ def build_system(cfg: RunConfig) -> neurolume.System:
     sac = cfg.algo
     obs_dim, act_dim = env.obs_dim, env.act_dim
     priv_dim = env.priv_dim if sac.critic_privileged else 0
-    in_dim = obs_dim + priv_dim + act_dim
 
     system = neurolume.System(f"{cfg.name}")
     plant = system.block(
@@ -81,13 +66,8 @@ def build_system(cfg: RunConfig) -> neurolume.System:
     system.connect(sample, plant, label="a")
 
     critic = TwinQ(obs_dim, priv_dim, act_dim, sac.critic_hidden, sac.critic_dropout, sac.critic_layer_norm)
-    critic_in = system.block(
-        "critic_in",
-        label="Concat [s, priv, a]",
-        description=f"{obs_dim} + {priv_dim} + {act_dim}",
-        output_shape=[in_dim],
-    )
-    critic_net = system.add("critic", _TwinQHeads(critic), (in_dim,), label="Critic: twin Q")
+    # One sample shape per `TwinQ.forward(obs, priv, act)` argument; each link below feeds the input of that name.
+    critic_net = system.add("critic", critic, ((obs_dim,), (priv_dim,), (act_dim,)), label="Critic: twin Q")
     if priv_dim:
         priv = system.block(
             "priv",
@@ -95,11 +75,10 @@ def build_system(cfg: RunConfig) -> neurolume.System:
             description="critic only, never the deployed actor",
             output_shape=[priv_dim],
         )
-        system.connect(plant, priv)
-        system.connect(priv, critic_in, label="priv")
-    system.connect(obs, critic_in, label="s")
-    system.connect(sample, critic_in, label="a")
-    system.connect(critic_in, critic_net)
+        system.connect(plant, priv, shape=[priv_dim])
+        system.connect(priv, critic_net, label="priv", to="priv")
+    system.connect(obs, critic_net, label="s", to="obs")
+    system.connect(sample, critic_net, label="a", to="act")
 
     losses = system.block(
         "losses",

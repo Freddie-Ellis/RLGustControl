@@ -20,6 +20,9 @@ How snappyHexMesh builds the mesh, and how the settings map onto it:
     2. Snapping: move the jagged cell faces onto the STL surfaces and their feature edges.
     3. Layers: push the mesh away from the walls and insert thin prism cells to resolve the boundary layer.
 
+Before writing the STL, the touching bodies are reduced to the aircraft's outer skin (see skin.py), so that
+faces hidden between bodies don't trigger refinement along every seam.
+
 Run as a script (normally from the Slurm job), with a case file from configs/cases/:
     python -m src.cfd.mesh configs/cases/uav_wingtip_10.toml <case_dir> --n-procs 32
 """
@@ -36,6 +39,7 @@ from pydantic import Field
 from src.cfd.case import CaseSpec
 from src.cfd.deflect import deflected_bodies
 from src.cfd.geometry import GeometryConfig, StrictModel
+from src.cfd.skin import outer_skin
 from src.cfd.stl import write_ascii_stl
 
 SURFACE = "aircraft"  # name of the combined STL and of its snappyHexMesh geometry entry
@@ -81,6 +85,15 @@ class MeshSettings(StrictModel):
     layer_expansion_ratio: float = 1.2
     final_layer_thickness: float = 0.5
     min_layer_thickness: float = 0.1
+
+    # Iteration counts. More iterations rarely improve the result once it settles, but cost run time.
+    n_snap_solve_iter: int = 30      # snapping: mesh-displacement smoothing iterations (nSolveIter)
+    n_layer_iter: int = 20           # layer addition: overall iterations (nLayerIter)
+    n_relaxed_layer_iter: int = 10   # ...after which the relaxed quality limits apply (nRelaxedIter)
+
+    # Faces of one body closer than this to a facing face of another are hidden (flush) and removed from
+    # the skin. 0.3 mm: above the STL export deviation and the thin strips beside rounded noses, far below cells.
+    skin_flush_tol: float = Field(default=3e-4, gt=0)
 
     max_local_cells: int = 5_000_000     # per processor, during castellation
     max_global_cells: int = 100_000_000  # whole mesh; castellation stops refining beyond this
@@ -164,8 +177,8 @@ def write_mesh_case(
     Returns the case summary that is also saved as mesh_case.json.
     """
     s = settings
-    bodies = deflected_bodies(geometry, deflections_deg)  # metres
-    write_ascii_stl(case_dir / "constant" / "triSurface" / f"{SURFACE}.stl", bodies)
+    bodies = deflected_bodies(geometry, deflections_deg)  # metres, each body closed
+    write_ascii_stl(case_dir / "constant" / "triSurface" / f"{SURFACE}.stl", outer_skin(bodies, s.skin_flush_tol))
 
     corners = torch.cat([t.reshape(-1, 3) for t in bodies.values()])
     lo, hi = corners.min(dim=0).values, corners.max(dim=0).values
@@ -212,7 +225,8 @@ boundary
 {{
     extractionMethod extractFromSurface;
     includedAngle    {s.feature_included_angle:g};
-    subsetFeatures   {{ nonManifoldEdges no; openEdges yes; }}
+    // Open edges are the seams between bodies left by trimming the skin, not real edges, so skip them.
+    subsetFeatures   {{ nonManifoldEdges no; openEdges no; }}
     writeObj         no;
 }}
 """)
@@ -297,7 +311,7 @@ snapControls
 {{
     nSmoothPatch    3;
     tolerance       2.0;
-    nSolveIter      100;
+    nSolveIter      {s.n_snap_solve_iter};
     nRelaxIter      5;
     nFeatureSnapIter 10;
     implicitFeatureSnap    false;
@@ -326,8 +340,8 @@ addLayersControls
     maxThicknessToMedialRatio 0.3;
     minMedialAxisAngle  90;
     nBufferCellsNoExtrude 0;
-    nLayerIter          50;
-    nRelaxedIter        20;
+    nLayerIter          {s.n_layer_iter};
+    nRelaxedIter        {s.n_relaxed_layer_iter};
 }}
 
 meshQualityControls

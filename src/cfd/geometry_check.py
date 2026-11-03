@@ -93,16 +93,49 @@ def _distance_across(points: torch.Tensor, triangles: Triangles) -> torch.Tensor
     return torch.where(inside, height, torch.inf)
 
 
-def _distance_to_facing(
-    points: torch.Tensor, normals: torch.Tensor, triangles: Triangles, chunk: int = 1024
+def _closest_distance(points: torch.Tensor, triangles: Triangles) -> torch.Tensor:
+    """Distance from each point (p, 3) to the closest point of each triangle (t, 3, 3), shape (p, t).
+
+    Uses the barycentric region test from Ericson, Real-Time Collision Detection (5.1.5): if the point projects
+    inside the triangle the distance is to that projection, otherwise to the nearest edge.
+    """
+    p = points[:, None, :]
+    a, b, c = triangles[None, :, 0], triangles[None, :, 1], triangles[None, :, 2]
+    ab, ac = b - a, c - a
+    d1, d2 = (ab * (p - a)).sum(-1), (ac * (p - a)).sum(-1)
+    d3, d4 = (ab * (p - b)).sum(-1), (ac * (p - b)).sum(-1)
+    d5, d6 = (ab * (p - c)).sum(-1), (ac * (p - c)).sum(-1)
+    va, vb, vc = d3 * d6 - d5 * d4, d5 * d2 - d1 * d6, d1 * d4 - d3 * d2
+    inside = (va >= 0) & (vb >= 0) & (vc >= 0)
+    denom = (va + vb + vc).clamp_min(1e-300)
+    projection = a + ab * (vb / denom)[..., None] + ac * (vc / denom)[..., None]
+
+    def to_segment(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        xy = y - x
+        t = (((p - x) * xy).sum(-1) / (xy * xy).sum(-1).clamp_min(1e-300)).clamp(0, 1)
+        return (p - (x + t[..., None] * xy)).norm(dim=-1)
+
+    to_edges = torch.minimum(torch.minimum(to_segment(a, b), to_segment(b, c)), to_segment(c, a))
+    return torch.where(inside, (p - projection).norm(dim=-1), to_edges)
+
+
+def distance_to_facing(
+    points: torch.Tensor, normals: torch.Tensor, triangles: Triangles, across_only: bool = True, chunk: int = 1024
 ) -> torch.Tensor:
-    """For each point (with its surface normal), the distance straight across to the nearest triangle facing it
-    (near-parallel, normals opposed); infinity if there is none."""
+    """For each point (with its surface normal), the distance to the nearest triangle facing it (near-parallel,
+    normals opposed); infinity if there is none.
+
+    With `across_only` (for measuring gaps), only distances straight across count, so a point beside a
+    surface's edge is never in a gap with it. Without it (for deciding whether a face is covered), the plain
+    closest distance is used: on curved surfaces made of long thin triangles, such as a flap's round nose, a
+    point can project just outside every triangle of a surface it is touching.
+    """
+    measure = _distance_across if across_only else _closest_distance
     tri_normals = facet_normals(triangles)
     best = torch.full((len(points),), float("inf"), dtype=points.dtype)
     for i in range(0, len(points), chunk):
         for j in range(0, len(triangles), chunk):
-            d = _distance_across(points[i:i + chunk], triangles[j:j + chunk])
+            d = measure(points[i:i + chunk], triangles[j:j + chunk])
             facing = normals[i:i + chunk] @ tri_normals[j:j + chunk].T < FACING_COS
             d = torch.where(facing, d, torch.inf)
             best[i:i + chunk] = torch.minimum(best[i:i + chunk], d.min(dim=1).values)
@@ -138,7 +171,7 @@ def measure_join(
     for this, that in ((surface_near, other_near), (other_near, surface_near)):
         if len(this) == 0 or len(that) == 0:
             continue
-        distance = _distance_to_facing(this.mean(dim=1), facet_normals(this), that)
+        distance = distance_to_facing(this.mean(dim=1), facet_normals(this), that)
         area = _areas(this)
         flush_area = max(flush_area, float(area[distance < flush_tol].sum()))
         thin = (distance >= flush_tol) & (distance < max_gap)

@@ -10,9 +10,10 @@ lateral_lengths = 20.0
 base_cell_size = 0.512
 
 # Surface refinement (min, max): min everywhere, max where the surface curves sharply (leading edges).
-fixed_body_level = [7, 8]        # 4-2 mm on the main body
-control_surface_level = [8, 9]   # 2-1 mm on control surfaces (they are only ~7 mm thick)
-feature_level = 9                # 1 mm along sharp edges
+# Uniform over the whole skin: 2 mm, refined to 1 mm at leading-edge curvature.
+fixed_body_level = [8, 9]
+control_surface_level = [8, 9]
+feature_level = 9                # 1 mm along sharp edges (trailing edges, tips)
 feature_included_angle = 150.0
 resolve_feature_angle = 30.0
 n_cells_between_levels = 3
@@ -31,6 +32,14 @@ min_layer_thickness = 0.1
 
 max_local_cells = 5_000_000
 max_global_cells = 100_000_000
+
+# Iteration counts (the first mesh used 100 / 50 / 20 and took 40 min; layer coverage had settled long before).
+n_snap_solve_iter = 30
+n_layer_iter = 20
+n_relaxed_layer_iter = 10
+
+# Faces hidden between touching bodies (closer than this, in m) are removed before meshing.
+skin_flush_tol = 3e-4
 
 # Pass/fail limits applied by src/cfd/mesh_report.py after checkMesh.
 [acceptance]

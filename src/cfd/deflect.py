@@ -106,11 +106,17 @@ def main(argv: list[str] | None = None) -> None:
                         help="control surface deflections in degrees; unlisted surfaces stay at 0")
     parser.add_argument("--cad-units", action="store_true",
                         help="write in the model's units (e.g. mm) instead of metres, to overlay on the CAD model")
+    parser.add_argument("--outer-skin", type=float, metavar="FLUSH_TOL",
+                        help="write only the exposed skin, as meshed (see skin.py); FLUSH_TOL in the output's units")
     args = parser.parse_args(argv)
 
     deflections = parse_deflections(args.deflect)
     geometry = GeometryConfig.from_toml(args.geometry)
-    write_ascii_stl(args.out_file, deflected_bodies(geometry, deflections, in_metres=not args.cad_units))
+    bodies = deflected_bodies(geometry, deflections, in_metres=not args.cad_units)
+    if args.outer_skin is not None:
+        from src.cfd.skin import outer_skin  # imported here to avoid a cycle: skin -> geometry_check -> deflect
+        bodies = outer_skin(bodies, args.outer_skin)
+    write_ascii_stl(args.out_file, bodies)
     print(f"wrote {args.out_file} with deflections {deflections or 'all zero'}")
 
 

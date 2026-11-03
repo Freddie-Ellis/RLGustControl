@@ -87,9 +87,9 @@ class MeshSettings(StrictModel):
     min_layer_thickness: float = 0.1
 
     # Iteration counts. More iterations rarely improve the result once it settles, but cost run time.
-    n_snap_solve_iter: int = 30      # snapping: mesh-displacement smoothing iterations (nSolveIter)
-    n_layer_iter: int = 20           # layer addition: overall iterations (nLayerIter)
-    n_relaxed_layer_iter: int = 10   # ...after which the relaxed quality limits apply (nRelaxedIter)
+    n_snap_solve_iter: int = 100     # snapping: mesh-displacement smoothing iterations (nSolveIter)
+    n_layer_iter: int = 50           # layer addition: overall iterations (nLayerIter)
+    n_relaxed_layer_iter: int = 20   # ...after which the relaxed quality limits apply (nRelaxedIter)
 
     # Faces of one body closer than this to a facing face of another are hidden (flush) and removed from
     # the skin. 0.3 mm: above the STL export deviation and the thin strips beside rounded noses, far below cells.

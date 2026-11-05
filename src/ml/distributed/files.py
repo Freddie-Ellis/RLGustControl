@@ -11,11 +11,15 @@
 
 Every file is written to `<name>.tmp` and then renamed, so a reader never sees a half-written file even over a
 network share. Keep the shared folder outside OneDrive: sync can lock or duplicate files mid-write.
+
+With the learner on the HPC, each side has its own copy of this folder and `sync.py` (on the tunnel PC) mirrors them,
+plus the learner's run directory. Only learner_state.pt stays on the HPC: only the learner needs it.
 """
 
 import re
+import sys
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import polars as pl
@@ -23,11 +27,17 @@ import torch
 from pydantic import BaseModel
 from torch import Tensor
 
+from src.config import CONFIG
 from src.ml.policy import SquashedGaussianPolicy
 from src.ml.run_config import RunConfig
 
 TRANSITION_COLUMNS = ("obs", "priv", "act", "rew", "next_obs", "next_priv", "done")
 _WEIGHTS_RE = re.compile(r"policy_v(\d+)\.pt")
+
+# ----- where the shared folder is: the one place to change it -----
+LOCAL_SHARED = Path(r"C:\rl_shared\test")  # tunnel PC (and laptop). Never inside OneDrive.
+HPC_SHARED = PurePosixPath("/scratch/fe1g22/wt_testing/test")  # the learner's copy on Iridis
+SHARED = Path(HPC_SHARED) if sys.platform == "linux" else LOCAL_SHARED  # this machine's copy: Linux = the HPC
 
 
 # ----- layout -----
@@ -51,6 +61,16 @@ def learner_run_path(shared: Path) -> Path:
     return shared / "learner_run.txt"
 
 
+def learner_run_dir(shared: Path, runs_dir: Path = CONFIG.runs_dir) -> Path | None:
+    """The learner's run directory, or None before it has started. If the learner ran on another machine (the HPC),
+    the path it wrote does not exist here, and the copy `sync.py` keeps is `runs_dir/<same name>` instead."""
+    path = learner_run_path(shared)
+    if not path.exists():
+        return None
+    written = path.read_text().strip()
+    return Path(written) if Path(written).exists() else runs_dir / PurePosixPath(written.replace("\\", "/")).name
+
+
 def learner_state_path(shared: Path) -> Path:
     return shared / "learner_state.pt"
 
@@ -67,13 +87,13 @@ def read_config(shared: Path) -> RunConfig:
 
 
 # ----- atomic writes -----
-def _tmp(path: Path) -> Path:
+def tmp_path(path: Path) -> Path:
     """`ep_1.json` -> `ep_1.json.tmp`. Keeping the full name stops ep_1.json and ep_1.parquet sharing a tmp file."""
     return path.with_name(path.name + ".tmp")
 
 
 def atomic_write_text(path: Path, text: str) -> None:
-    tmp = _tmp(path)
+    tmp = tmp_path(path)
     tmp.write_text(text)
     tmp.replace(path)
 
@@ -112,8 +132,8 @@ def write_episode(shared: Path, meta: EpisodeMetaData, frame: pl.DataFrame) -> N
     stem = outbox_dir(shared) / f"ep_{meta.episode_id:06d}"
     atomic_write_text(stem.with_suffix(".json"), meta.model_dump_json(indent=2))
     parquet = stem.with_suffix(".parquet")
-    frame.write_parquet(_tmp(parquet), compression="zstd")
-    _tmp(parquet).replace(parquet)
+    frame.write_parquet(tmp_path(parquet), compression="zstd")
+    tmp_path(parquet).replace(parquet)
 
 
 def new_episodes(shared: Path, seen: set[str]) -> list[Path]:
@@ -130,16 +150,16 @@ def read_episode(parquet: Path) -> tuple[EpisodeMetaData, pl.DataFrame]:
 def write_weights(shared: Path, version: int, policy: SquashedGaussianPolicy) -> Path:
     """Save CPU copies of the weights, so the tunnel PC (no GPU) can load them."""
     path = weights_dir(shared) / f"policy_v{version:06d}.pt"
-    torch.save({k: v.detach().cpu() for k, v in policy.state_dict().items()}, _tmp(path))
-    _tmp(path).replace(path)
+    torch.save({k: v.detach().cpu() for k, v in policy.state_dict().items()}, tmp_path(path))
+    tmp_path(path).replace(path)
     return path
 
 
 def write_learner_state(shared: Path, state: dict[str, Any]) -> None:
     """Only the learner reads this back, so tensors stay on its device."""
     path = learner_state_path(shared)
-    torch.save(state, _tmp(path))
-    _tmp(path).replace(path)
+    torch.save(state, tmp_path(path))
+    tmp_path(path).replace(path)
 
 
 def read_learner_state(shared: Path, device: torch.device) -> dict[str, Any] | None:
@@ -147,7 +167,13 @@ def read_learner_state(shared: Path, device: torch.device) -> dict[str, Any] | N
     return torch.load(path, map_location=device) if path.exists() else None
 
 
+def weights_version(name: str) -> int | None:
+    """`policy_v000007.pt` -> 7. None for anything else, including half-written `.tmp` files."""
+    m = _WEIGHTS_RE.fullmatch(name)
+    return int(m.group(1)) if m else None
+
+
 def latest_weights(shared: Path) -> tuple[int, Path] | None:
     """(version, path) of the newest weights, or None if the learner has not published any yet."""
-    found = [(int(m.group(1)), p) for p in weights_dir(shared).glob("policy_v*.pt") if (m := _WEIGHTS_RE.fullmatch(p.name))]
+    found = [(v, p) for p in weights_dir(shared).glob("policy_v*.pt") if (v := weights_version(p.name)) is not None]
     return max(found) if found else None

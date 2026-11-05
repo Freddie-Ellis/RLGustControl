@@ -25,6 +25,7 @@ from src.config import CONFIG
 from src.ml.algos.replay import ReplayBuffer
 from src.ml.algos.sac import SAC
 from src.ml.distributed.files import (
+    SHARED,
     atomic_write_text,
     config_path,
     frame_to_transitions,
@@ -44,7 +45,6 @@ from src.ml.runs import RunDir, make_env, make_policy
 
 # ----- settings for running this file directly -----
 CONFIG_FILE = Path("configs/sac_tunnel_mock.toml")  # becomes SHARED/config.json for the actor
-SHARED = Path(r"C:\rl_shared\session1")  # in the tunnel: the tunnel PC's share. Never inside OneDrive.
 RUN_NAME: str | None = None  # None -> the name in the config
 SEED_FROM: list[Path] = []  # extra outbox folders to pre-load, e.g. open-loop tunnel runs
 MAX_UPDATES: int | None = None  # None -> run until SHARED/STOP appears

@@ -28,13 +28,12 @@ from qtpy.QtWidgets import (
 
 from src.config import CONFIG, ROOT
 from src.ml.distributed import actor, learner
-from src.ml.distributed.files import stop_path
+from src.ml.distributed.files import SHARED, stop_path
 from src.ml.distributed.session import EpisodeSummary, SessionReader
 from src.ml.run_config import RunConfig
 from src.ui.utils.dynamic_vb import DynamicViewBox
 from src.ui.utils.logger import RED, Readout, TelemetryConsole
 
-DEFAULT_SHARED = Path(r"C:\rl_shared\session1")
 POLL_MS = 1000
 STOP_WAIT_MS = 30_000  # on close: time for the actor to finish its episode and the learner its chunk after STOP
 KIND_STYLE: dict[str, tuple[tuple[int, int, int], int]] = {  # colour, marker size
@@ -55,7 +54,7 @@ class SessionTab(QWidget):
         self.reader: SessionReader | None = None
 
         # --- top: folder + status + stop ---
-        self.folder = QLineEdit(str(DEFAULT_SHARED))
+        self.folder = QLineEdit(str(SHARED))
         launch_learner = QPushButton("Launch learner")
         launch_learner.clicked.connect(self._launch_learner)
         launch_actor = QPushButton("Launch actor")

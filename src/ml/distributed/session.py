@@ -18,7 +18,7 @@ from src.ml.distributed.files import (
     config_path,
     frame_to_transitions,
     latest_weights,
-    learner_run_path,
+    learner_run_dir,
     new_episodes,
     outbox_dir,
     read_config,
@@ -162,8 +162,8 @@ class SessionReader:
 
     # ----- learner -----
     def learner_run(self) -> RunDir | None:
-        path = learner_run_path(self.shared)
-        return RunDir(Path(path.read_text().strip())) if path.exists() else None
+        path = learner_run_dir(self.shared)
+        return RunDir(path) if path else None
 
     def learner_status(self) -> RunStatus | None:
         run = self.learner_run()

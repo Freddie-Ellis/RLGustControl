@@ -17,6 +17,7 @@ import torch
 from torch import Tensor
 
 from src.ml.distributed.files import (
+    SHARED,
     EpisodeMetaData,
     latest_weights,
     read_config,
@@ -28,7 +29,6 @@ from src.ml.run_config import RunConfig
 from src.ml.runs import make_env, make_policy
 
 # ----- settings for running this file directly -----
-SHARED = Path(r"C:\rl_shared\session1")  # the same folder the learner uses (config.json comes from it)
 N_ENVS = 1  # parallel envs: 1 in the tunnel, more only for sim envs
 EVAL_EVERY: int | None = None  # every k-th episode deterministic; None -> from the config
 MAX_EPISODES: int | None = None  # None -> run until SHARED/STOP appears

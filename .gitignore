@@ -26,8 +26,5 @@ Thumbs.db
 !.vscode/settings.json
 !.vscode/extensions.json
 
-# Ignore all slurm
-*.slurm
-
 # Ignore profiles
 *.prof

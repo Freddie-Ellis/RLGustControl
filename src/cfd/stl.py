@@ -88,7 +88,7 @@ def write_obj_edges(path: Path, edges: torch.Tensor) -> None:
     """Write line segments, shape (k, 2, 3), as an OBJ file of points ("v x y z") and lines ("l i j").
 
     Coordinates use the same format as write_ascii_stl, so edge ends taken from an STL's corners match them
-    exactly (surfaceFeatureExtract matches the edges to the surface's edges by position).
+    exactly. snappyHexMesh reads this format directly as feature edges.
     """
     points, index = torch.unique(edges.reshape(-1, 3), dim=0, return_inverse=True)
     lines = [f"v {x:.7e} {y:.7e} {z:.7e}" for x, y, z in points.tolist()]

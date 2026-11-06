@@ -89,9 +89,9 @@ The skin is then checked: it must be closed, and no part of it may face another 
 uv run python -m src.cfd.skin cad/uav/geometry.toml hpc/runs/check/skin.stl -d wingtip_r=10 wingtip_l=10 --cad-units
 ```
 
-If the check fails, it says which bodies are affected and where, and writes the offending faces next to the skin as `<name>_narrow_gaps.stl`.
+If the check fails, it says which bodies are affected and where, and writes the offending faces next to the skin as `<name>_narrow_gaps.stl`. `python -m src.cfd.deflect` takes the same arguments and writes the separate bodies before merging.
 
-**Feature edges:** snappyHexMesh refines along sharp edges and snaps points onto them. They are chosen in `skin.py` (written as `<name>_features.obj`, viewable in ParaView) rather than by `surfaceFeatureExtract`: where two bodies meet, their separate triangulations leave a step of a few hundredths of a millimetre along the seam, which a plain angle test sees as a sharp edge, refining every seam to 1 mm and denting the surface when points snap to it. An edge counts only if it turns by more than 30° and both of its faces come from source triangles that are mostly on the outside, which every seam step fails. `python -m src.cfd.deflect` takes the same arguments and writes the separate bodies before merging.
+**Feature edges:** snappyHexMesh refines along sharp edges and snaps points onto them. They are chosen in `skin.py` and written as `<name>_features.obj` (viewable in ParaView), which snappyHexMesh reads directly, rather than found by `surfaceFeatureExtract`: where two bodies meet, their separate triangulations leave a step of a few hundredths of a millimetre along the seam, which a plain angle test sees as a sharp edge, refining every seam to 1 mm and denting the surface when points snap to it. An edge counts only if it turns by more than 30° and both of its faces come from source triangles that are mostly on the outside, which every seam step fails.
 
 ### 3. Meshing (snappyHexMesh)
 - `blockMesh` builds a background hex domain extending about 20 body lengths upstream and to the sides, and about 40 lengths downstream.
@@ -117,7 +117,7 @@ wingtip_l = 10.0
 **Running a mesh on Iridis 6** (the whole process runs on the HPC):
 1. Once, on the login node: `bash hpc/setup_python.sh`. It creates `.venv-hpc` with the CPU build of PyTorch, Pydantic and manifold3d. Rerun it whenever these dependencies change.
 2. Submit one case: `sbatch hpc/mesh_case.slurm configs/cases/uav_wingtip_10.toml`. To submit many, put their case files in one folder and run `bash hpc/submit_cases.sh <folder>`. This submits a Slurm array with one task per case file.
-3. The job checks the case file, builds and checks the outer skin (stopping within a minute if the check fails), then writes the case (aircraft STL and dictionaries) to `hpc/runs/<case name>_<jobid>/`. It then runs `surfaceFeatureExtract`, `blockMesh`, `snappyHexMesh` (MPI), `reconstructParMesh` and `checkMesh -allGeometry -allTopology`.
+3. The job checks the case file, builds and checks the outer skin (stopping within a minute if the check fails), then writes the case (aircraft STL and dictionaries) to `hpc/runs/<case name>_<jobid>/`. It then runs `blockMesh`, `snappyHexMesh` (MPI), `reconstructParMesh` and `checkMesh -allGeometry -allTopology`.
 4. It finishes with `mesh_report.json`: cell counts and types, maximum non-orthogonality and skewness, prism-layer coverage per wall, and pass/fail against the `[acceptance]` limits in the mesh settings. The job exits with an error if the mesh fails.
 5. To inspect the mesh, download `postProcessing/meshSlices/`. It holds cutting planes through the root and each starboard control surface, plus the wall surfaces, as small VTK files carrying cell quality fields. Faces that checkMesh flags as bad are in `postProcessing/checkMesh/`. The full mesh is too large to open on a laptop.
 

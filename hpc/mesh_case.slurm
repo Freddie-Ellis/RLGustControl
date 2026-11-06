@@ -17,7 +17,7 @@
 #   postProcessing/meshSlices/   cutting planes and wall surfaces (VTK) with quality fields: download these
 #   postProcessing/checkMesh/    VTK surfaces of any faces checkMesh flags as bad
 #
-# Steps: Python writes the case (deflected aircraft STL + dictionaries) -> surfaceFeatureExtract -> blockMesh
+# Steps: Python writes the case (aircraft skin STL, its feature edges, dictionaries) -> blockMesh
 #        -> decomposePar -> snappyHexMesh (MPI) -> reconstructParMesh -> checkMesh -> slices -> report.
 # The job fails (non-zero exit) if any step fails or the mesh does not meet the acceptance limits.
 # Resources below can be overridden at submission, e.g. sbatch --ntasks=64 --time=04:00:00 ...
@@ -101,7 +101,6 @@ cd "${case_dir}"
 
 echo
 echo "=== Meshing ==="
-run_step surfaceFeatureExtract surfaceFeatureExtract
 run_step blockMesh blockMesh
 run_step decomposePar decomposePar -force
 run_step snappyHexMesh mpirun -np "${SLURM_NTASKS}" snappyHexMesh -parallel -overwrite

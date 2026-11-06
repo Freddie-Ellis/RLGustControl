@@ -223,7 +223,11 @@ class SessionTab(QWidget):
 
     def _launch_learner(self) -> None:
         """Run the learner here, in a new process on the session's folder. A new session starts with the config
-        chosen in the box; an existing one carries on with its own (learner.session_config decides)."""
+        chosen in the box; an existing one carries on with its own (learner.session_config decides).
+        If the session's learner is on another machine (the HPC), never start a second one: follow its log instead."""
+        if (local := self._local_folder()) is not None and (other := learner.learner_elsewhere(local)) is not None:
+            self._follow_learner(local, other)
+            return
         shared = self._shared_for(self.learner_console)
         if shared is None:
             return
@@ -238,6 +242,19 @@ class SessionTab(QWidget):
         self.learner_console.run(
             learner.run_learner, cfg, shared, cwd=str(ROOT), profile_to=self._profile_path("learner")
         )
+
+    def _follow_learner(self, shared: Path, other: learner.LearnerElsewhere) -> None:
+        """Open the learner console on the copy of the remote learner's output.log, live while the sync runs."""
+        console = self.learner_console
+        console.popup()
+        console.follow_file(other.log, f"this session's learner runs on another machine ({other.where}); "
+                                       "this is its output, as the sync copies it here")
+        if not self.sync_console.is_running():
+            console.system("the sync is not running here, so nothing new arrives: launch the sync to follow it live",
+                           RED)
+        if not other.running:
+            console.system(f"its status is {other.state}; to carry the session on, start it on the HPC: "
+                           f"sbatch slurm/learner.slurm {shared.name}", RED)
 
     def _launch_actor(self) -> None:
         """Run the actor in a new process on the session's folder. It runs the session's config.json."""

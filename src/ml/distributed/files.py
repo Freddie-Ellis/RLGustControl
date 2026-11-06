@@ -90,6 +90,13 @@ def learner_run_path(shared: Path) -> Path:
     return shared / "learner_run.txt"
 
 
+def learner_is_elsewhere(shared: Path) -> bool:
+    """The session's learner runs (or ran) on another machine, e.g. the HPC: the run directory it wrote down is not
+    on this one. Its run here is the copy the sync keeps, which `learner_run_dir` finds."""
+    path = learner_run_path(shared)
+    return path.exists() and not Path(path.read_text().strip()).exists()
+
+
 def learner_run_dir(shared: Path, runs_dir: Path = CONFIG.runs_dir) -> Path | None:
     """The learner's run directory, or None before it has started. If the learner ran on another machine (the HPC),
     the path it wrote does not exist here, and the copy `sync.py` keeps is `runs_dir/<same name>` instead."""

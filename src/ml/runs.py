@@ -7,13 +7,18 @@ runs/<session>/                  a distributed learner's run: named after its se
     policy.pt     policy weights (state_dict)
     status.json   RunStatus: running / done / stopped / failed
     STOP          created by the UI to ask a running training process to stop
+    output.log    everything the process printed, errors included (the distributed learner writes it, so its output
+                  can be followed from another machine)
 """
 
 import csv
+import io
+import socket
+import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Literal
+from typing import Literal, TextIO
 
 import polars as pl
 from pydantic import BaseModel
@@ -92,6 +97,19 @@ class RunDir:
     def stop_path(self) -> Path:
         return self.path / "STOP"
 
+    @property
+    def log_path(self) -> Path:
+        return self.path / "output.log"
+
+    def tee_output(self) -> None:
+        """From now on, also write everything this process prints (stdout and stderr, so an uncaught traceback too)
+        to output.log. Appends: a resumed run keeps one log, with a line marking each start."""
+        # Line-buffered, so it can be read while the run goes on; open until the process ends, so no `with`.
+        log = open(self.log_path, "a", encoding="utf-8", buffering=1)  # noqa: SIM115
+        log.write(f"--- started {datetime.now():%Y-%m-%d %H:%M:%S} on {socket.gethostname()} ---\n")
+        sys.stdout = _Tee(sys.stdout, log)
+        sys.stderr = _Tee(sys.stderr, log)
+
     # ----- read / write -----
     def read_config(self) -> RunConfig:
         return RunConfig.model_validate_json(self.config_path.read_text())
@@ -127,6 +145,26 @@ class RunDir:
 
     def stop_requested(self) -> bool:
         return self.stop_path.exists()
+
+
+class _Tee(io.TextIOBase):
+    """A text stream that writes to several others, e.g. the console and a log file."""
+
+    def __init__(self, *streams: TextIO) -> None:
+        super().__init__()
+        self._streams = streams
+
+    def write(self, s: str) -> int:
+        for stream in self._streams:
+            stream.write(s)
+        return len(s)
+
+    def flush(self) -> None:
+        for stream in self._streams:
+            stream.flush()
+
+    def isatty(self) -> bool:
+        return self._streams[0].isatty()
 
 
 @dataclass

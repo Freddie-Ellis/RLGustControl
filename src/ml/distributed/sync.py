@@ -65,12 +65,15 @@ CONNECT_TIMEOUT_S = 15
 LIST_TIMEOUT_S = 60.0
 TRANSFER_TIMEOUT_S = 600.0  # a whole pass, generous for a backlog of episodes after the link was down
 STOP_LINGER_S = 120.0  # after STOP, wait this long at most for the learner's final status before finishing
+REPLACE_TRIES = 10  # a download is renamed over a file the UI may be reading; Windows refuses that while it is open
+REPLACE_WAIT_S = 0.05  # between those tries: a reader holds the file for milliseconds
 
 type Entries = dict[str, str]  # file name -> "size month day time" from `ls -l`: changes whenever the file does
 
 
 class SyncError(OSError):
-    """sftp failed or timed out. The pass is dropped and retried; nothing is lost."""
+    """sftp failed or timed out, or a download could not be put in place. The pass is dropped and retried; nothing
+    is lost."""
 
 
 @dataclass(frozen=True)
@@ -225,10 +228,24 @@ class Sync:
         plan = self.plan(listing)
         if plan.commands:
             self.sftp(plan.commands, TRANSFER_TIMEOUT_S)
-            for d in plan.downloads:
-                tmp_path(d.local).replace(d.local)
-                self.fetched[d.remote] = d.signature
+            busy = [d.local.name for d in plan.downloads if not self._put_in_place(d)]
+            if busy:  # not remembered as fetched, so the next pass downloads them again
+                raise SyncError(f"could not replace {', '.join(busy)} (open in another program); next pass retries")
         return PassResult(", ".join(plan.summary) or None, idle=not plan.commands)
+
+    def _put_in_place(self, d: Download) -> bool:
+        """Rename a finished download over the local file. On Windows that fails while anything has the file open
+        (the Session or Compare tab reading metrics.csv, say), so try a few times. False if it stayed busy."""
+        for attempt in range(REPLACE_TRIES):
+            try:
+                tmp_path(d.local).replace(d.local)
+            except PermissionError:
+                if attempt < REPLACE_TRIES - 1:
+                    time.sleep(REPLACE_WAIT_S)
+                continue
+            self.fetched[d.remote] = d.signature
+            return True
+        return False
 
     def learner_finished(self) -> bool:
         """The learner's status (from our copy of its run directory) says it is no longer running."""
@@ -262,7 +279,7 @@ class Sync:
         while True:
             try:
                 result = self.run_pass()
-            except SyncError as e:
+            except OSError as e:  # SyncError, or any file trouble here: a pass is never worth stopping the session for
                 message = f"pass failed, retrying: {e}"
                 print(message, file=sys.stderr, flush=True)
             else:

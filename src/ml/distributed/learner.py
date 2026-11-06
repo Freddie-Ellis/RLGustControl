@@ -22,6 +22,7 @@ resumed session keeps one run directory and one metrics.csv.
 import math
 import sys
 import time
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -37,6 +38,8 @@ from src.ml.distributed.files import (
     frame_to_transitions,
     init_shared,
     latest_weights,
+    learner_is_elsewhere,
+    learner_run_dir,
     learner_run_path,
     new_episodes,
     read_config,
@@ -204,6 +207,31 @@ class Learner:
                 time.sleep(IDLE_SLEEP_S)  # waiting for the actor
 
 
+@dataclass(frozen=True)
+class LearnerElsewhere:
+    """The session's learner, on another machine (e.g. the HPC), as seen through the copy of its run the sync keeps."""
+
+    where: str  # its run directory on that machine
+    log: Path  # the copy of its output.log here
+    state: str  # its status as far as the copy knows: running / done / stopped / failed, or "unknown" before it arrives
+
+    @property
+    def running(self) -> bool:
+        return self.state in ("running", "unknown")  # unknown: assume running rather than risk two learners
+
+
+def learner_elsewhere(shared: Path) -> LearnerElsewhere | None:
+    """The session's learner if it is on another machine, else None (no learner yet, or one on this machine)."""
+    if not learner_is_elsewhere(shared) or (path := learner_run_dir(shared)) is None:
+        return None
+    run = RunDir(path)
+    try:
+        state: str = run.read_status().state
+    except (OSError, ValueError):
+        state = "unknown"
+    return LearnerElsewhere(learner_run_path(shared).read_text().strip(), run.log_path, state)
+
+
 def find_config(name: str) -> Path:
     """A config by name from configs/ (`sac_tunnel_mock`) or by path (`configs/sac_tunnel_mock.toml`)."""
     path = Path(name)
@@ -235,7 +263,11 @@ def run_learner(
     seed_from: list[Path] | None = None,
     max_updates: int | None = None,
 ) -> RunDir:
-    """Set up the shared folder and a run directory, then learn until STOP (or `max_updates`)."""
+    """Set up the shared folder and a run directory, then learn until STOP (or `max_updates`). Everything it prints
+    also goes to the run's output.log, which the sync copies, so a learner on the HPC can be followed from the UI."""
+    if (other := learner_elsewhere(shared)) is not None and other.running:
+        raise SystemExit(f"session {shared.name!r} already has a learner running on another machine ({other.where}); "
+                         "one session must have one learner, or their weights and metrics get mixed")
     if config_path(shared).exists() and read_config(shared).model_dump() != config.model_dump():
         # The episodes already in this folder were made for another config (maybe other obs/act sizes).
         raise SystemExit(f"{config_path(shared)} holds a different config; use a fresh shared folder")
@@ -246,6 +278,7 @@ def run_learner(
         run = RunDir.open_named(config, shared.name, CONFIG.runs_dir)  # runs/<session>, the same name as the session
     except ValueError as e:
         raise SystemExit(str(e)) from e
+    run.tee_output()
     print(f"RUN_DIR {run.path}", flush=True)
     print(f"session {shared.name}: {config.describe()}", flush=True)
     atomic_write_text(learner_run_path(shared), str(run.path))  # lets the Session tab find the learner's metrics

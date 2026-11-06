@@ -1,5 +1,6 @@
 """A live log window for a child process (the learner or the actor). Closing the window only hides it; the process
-keeps running. Launch either a command line (`start`) or a Python function in a fresh interpreter (`run`).
+keeps running. Launch either a command line (`start`) or a Python function in a fresh interpreter (`run`), or follow
+a log file another machine's process writes (`follow_file`, e.g. the HPC learner's output.log, copied by the sync).
 
 Each line is prefixed with the seconds since launch. Numbers are lightly highlighted, stderr is red, and notes from
 the window itself (start, exit) are grey italics. The header gives the process state, PID, elapsed time and line
@@ -46,6 +47,7 @@ NUMBER_TOKEN = re.compile(r"(?<![\w.])[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?\b")
 INTERPRETER_PID = re.compile(r"^interpreter pid (\d+)")  # first line from run_callable
 MAX_LINES = 5000
 TICK_MS = 500
+FOLLOW_MS = 1000  # how often a followed log file is checked for new lines
 SERIF = "Cambria"
 MONO = "Consolas"
 
@@ -116,6 +118,10 @@ class TelemetryConsole(QWidget):
         self._trace: deque[float] = deque(maxlen=300)
         self._state = "idle"
         self._state_colour = DIM
+        self._follow_path: Path | None = None  # a log file being followed instead of a process
+        self._follow_pos = 0  # bytes of it already shown
+        self._follow_timer = QTimer(self)
+        self._follow_timer.timeout.connect(self._read_file)
 
         # --- header: title and state on the left, readout and controls on the right ---
         self.title = QLabel(name)
@@ -124,7 +130,8 @@ class TelemetryConsole(QWidget):
         self.status.setFont(QFont(SERIF, 10))
         self.readout_label = QLabel()
         self.readout_label.setFont(QFont(SERIF, 11))
-        self.readout_label.setVisible(readout is not None)
+        if readout is None:
+            self.readout_label.hide()  # not setVisible(True) otherwise: children show with their window anyway
 
         self.spark: pg.PlotWidget | None = None
         self._spark_curve: pg.PlotDataItem | None = None
@@ -209,6 +216,7 @@ class TelemetryConsole(QWidget):
         if self.is_running():
             self.system("already running", RED)
             return
+        self.stop_following()
         self._t0 = time.monotonic()
         self._pid = None
         self._trace.clear()
@@ -261,6 +269,65 @@ class TelemetryConsole(QWidget):
         self.start(sys.executable, argv, cwd, description=f"{fn.__module__}.{fn.__qualname__}({call})")
         if profile_to is not None:
             self.system(f"profiling to {profile_to} (written on exit, so stop with STOP rather than killing)")
+
+    # ----- following a log file -----
+    def follow_file(self, path: Path, description: str) -> None:
+        """Show `path` and every line added to it, as if its process ran here. For a process on another machine
+        whose log is copied here (the gutter then shows when a line arrived, not when it was printed)."""
+        if self.is_running():
+            self.system("a process is running in this window; it cannot follow a file as well", RED)
+            return
+        if path == self._follow_path:
+            return  # already following it
+        self.stop_following()
+        self._t0 = time.monotonic()
+        self._buffers = {"OUT": "", "ERR": ""}
+        if self.text.blockCount() > 1:
+            self.text.appendHtml(_span("", DIM))
+        self.system(f"{self.name}, following {path} from {datetime.now():%d %b %Y, %H:%M:%S}")
+        self.system(description)
+        self._follow_path, self._follow_pos = path, 0
+        self._set_state("following", GREEN)
+        self._timer.start(TICK_MS)
+        self._follow_timer.start(FOLLOW_MS)
+        if not path.exists():
+            self.system("no log there yet: it appears once the process writes one (and the sync copies it)")
+        self._read_file()
+
+    def stop_following(self) -> None:
+        if self._follow_path is None:
+            return
+        self._follow_timer.stop()
+        self._timer.stop()
+        self._read_file()
+        self.system(f"stopped following {self._follow_path}")
+        self._follow_path = None
+        self._set_state("idle", DIM)
+
+    def is_following(self) -> bool:
+        return self._follow_path is not None
+
+    def _read_file(self) -> None:
+        """Show what was added to the followed file since the last look."""
+        if self._follow_path is None:
+            return
+        try:
+            size = self._follow_path.stat().st_size
+            if size < self._follow_pos:  # replaced by a shorter file: a new log, start again
+                self.system("the log was replaced; reading it from the start")
+                self._follow_pos = 0
+            if size == self._follow_pos:
+                return
+            with open(self._follow_path, "rb") as f:
+                f.seek(self._follow_pos)
+                data = f.read()
+        except OSError:
+            return  # not there yet, or being replaced right now by the sync: try again next time
+        self._follow_pos += len(data)
+        self._buffers["OUT"] += data.decode("utf-8", errors="replace")
+        *lines, self._buffers["OUT"] = self._buffers["OUT"].split("\n")
+        for line in lines:
+            self._emit_line("OUT", line.rstrip("\r"))
 
     def kill(self, wait_ms: int = 2000) -> None:
         if self._process is not None and self.is_running():
@@ -354,7 +421,7 @@ class TelemetryConsole(QWidget):
         pid = self._pid or (self._process.processId() if self._process is not None else 0)
         if running and pid:
             parts.append(f"pid {pid}")
-        if self._process is not None:
+        if self._process is not None or self._follow_path is not None:
             parts.append(f"elapsed {_hms(time.monotonic() - self._t0)}")
         parts.append(f"{self._n_lines} lines")
         self.status.setText(f'<span style="color:{DIM}">{" · ".join(parts)}</span>')

@@ -10,6 +10,13 @@ cuts triangles along the curves where bodies meet and keeps only the parts on th
 single closed surface with no hidden faces. Each triangle of the union remembers which body it came from, so
 each body still becomes its own patch (for per-surface forces and hinge moments).
 
+`Skin.feature_edges` lists the sharp edges for snappyHexMesh to refine along and snap to. They are not
+found from the merged surface alone: where two bodies' skins meet at a seam, their separate triangulations
+differ by up to the STL export deviation, so the union leaves a tiny step (a sliver of the otherwise hidden
+flap end face or nose) all along the seam. Each step looks like a sharp edge, and snapping to it dents the
+surface. So an edge only counts if both of its faces come from source triangles that are mostly on the
+outside, which every step sliver fails.
+
 For this to work, bodies must overlap or share flat faces. Two separately triangulated copies of the same
 curved surface (a flap nose in a zero-clearance cove) weave through each other by up to the STL export
 deviation, and the union then keeps slivers of both. `check_skin` finds such problems, and any other narrow
@@ -20,6 +27,8 @@ Run as a script to write the skin and check it, e.g.:
 """
 
 import argparse
+import math
+from dataclasses import dataclass
 from pathlib import Path
 
 import manifold3d
@@ -28,8 +37,8 @@ import torch
 
 from src.cfd.deflect import deflected_bodies, parse_deflections
 from src.cfd.geometry import GeometryConfig
-from src.cfd.stl import Triangles, facet_normals, write_ascii_stl
-from src.cfd.surface import open_edge_count, weld
+from src.cfd.stl import Triangles, facet_normals, write_ascii_stl, write_obj_edges
+from src.cfd.surface import directed_edges, open_edge_count, weld
 
 
 def _to_manifold(triangles: Triangles, name: str) -> manifold3d.Manifold:
@@ -42,7 +51,42 @@ def _to_manifold(triangles: Triangles, name: str) -> manifold3d.Manifold:
     return solid.as_original()
 
 
-def outer_skin(bodies: dict[str, Triangles]) -> dict[str, Triangles]:
+@dataclass(frozen=True)
+class Skin:
+    """The aircraft's merged outer skin."""
+    patches: dict[str, Triangles]  # the skin's triangles, by the body they came from (its patch)
+    exposed: torch.Tensor          # per triangle, in patch order: its source triangle is mostly on the outside
+
+    def triangles(self) -> Triangles:
+        return torch.cat(list(self.patches.values()))
+
+    def feature_edges(self, min_angle_deg: float) -> torch.Tensor:
+        """Sharp edges of the skin, shape (k, 2, 3): edges where the surface turns by more than
+        `min_angle_deg`, between two faces whose source triangles are mostly on the outside."""
+        triangles = self.triangles()
+        vertices, faces = weld(triangles)
+        edges = directed_edges(faces).sort(dim=1).values    # (3n, 2): face i's edges are rows i, n + i, 2n + i
+        face_of_edge = torch.arange(len(faces)).repeat(3)
+        unique_edges, edge_number, uses = torch.unique(edges, dim=0, return_inverse=True, return_counts=True)
+
+        # The two faces on each edge used exactly twice (edges used four times, where two parts of the skin
+        # touch along a line, are left out).
+        order = edge_number.argsort(stable=True)
+        first = torch.cumsum(uses, dim=0) - uses
+        shared = (uses == 2).nonzero().flatten()
+        face_a, face_b = face_of_edge[order[first[shared]]], face_of_edge[order[first[shared] + 1]]
+
+        normals = facet_normals(triangles)
+        sharp = (normals[face_a] * normals[face_b]).sum(dim=1) < math.cos(math.radians(min_angle_deg))
+        keep = sharp & self.exposed[face_a] & self.exposed[face_b]
+        # Take the coordinates from the triangles' own corners rather than the welded (rounded) vertices, so
+        # the edge ends are exactly the skin's corner points.
+        corners = torch.zeros_like(vertices)
+        corners[faces.flatten()] = triangles.reshape(-1, 3)
+        return corners[unique_edges[shared[keep]]]
+
+
+def outer_skin(bodies: dict[str, Triangles]) -> Skin:
     """The outer skin of the union of `bodies` (each closed), split back into the faces of each body.
 
     Every body keeps its key, with the triangles of the union that lie on its surface (none if it is hidden
@@ -64,21 +108,39 @@ def outer_skin(bodies: dict[str, Triangles]) -> dict[str, Triangles]:
 
     # Triangles come grouped in runs, one per source body: run k is triangles run_index[k] / 3 up to
     # run_index[k + 1] / 3, from the body whose original id is run_original_id[k].
+    # face_id[i] is the number of triangle i's source triangle within its body.
     run_start = torch.from_numpy(np.asarray(mesh.run_index).astype(np.int64)) // 3
     run_id = np.asarray(mesh.run_original_id)
     body_of_face = torch.repeat_interleave(torch.arange(len(run_id)), run_start[1:] - run_start[:-1])
+    source = torch.from_numpy(np.asarray(mesh.face_id).astype(np.int64))
+
+    # Share of each source triangle that ends up on the skin: the area of the union triangles cut from it,
+    # over its own area. Source triangles are numbered across all bodies in turn, from first_source.
+    names = [name_of_id[int(original_id)] for original_id in run_id]
+    first_source = dict(zip(bodies, np.cumsum([0] + [len(t) for t in bodies.values()]).tolist()))
+    global_source = source + torch.tensor([first_source[name] for name in names])[body_of_face]
+    source_area = torch.cat([_areas(t) for t in bodies.values()])
+    kept_area = torch.zeros_like(source_area).index_add_(0, global_source, _areas(vertices[faces]))
+    exposed = (kept_area / source_area.clamp_min(1e-300))[global_source] > 0.5
 
     # Where faces of two bodies coincide (flush flat faces), the union also produces tiny pieces enclosing
     # no volume, and closed pockets between bodies become separate pieces too. Neither is part of the
     # aircraft's outer surface, so keep only the largest piece.
     keep = _largest_piece(vertices, faces)
-    faces, body_of_face = faces[keep], body_of_face[keep]
+    faces, body_of_face, exposed = faces[keep], body_of_face[keep], exposed[keep]
 
-    skin = {name: torch.zeros((0, 3, 3), dtype=torch.float64) for name in bodies}
-    for k, original_id in enumerate(run_id):
-        name = name_of_id[int(original_id)]
-        skin[name] = torch.cat([skin[name], vertices[faces[body_of_face == k]]])
-    return skin
+    patches = {name: torch.zeros((0, 3, 3), dtype=torch.float64) for name in bodies}
+    patch_exposed = {name: torch.zeros(0, dtype=torch.bool) for name in bodies}
+    for k, name in enumerate(names):
+        in_run = body_of_face == k
+        patches[name] = torch.cat([patches[name], vertices[faces[in_run]]])
+        patch_exposed[name] = torch.cat([patch_exposed[name], exposed[in_run]])
+    return Skin(patches=patches, exposed=torch.cat(list(patch_exposed.values())))
+
+
+def _areas(triangles: Triangles) -> torch.Tensor:
+    """Area of each triangle."""
+    return torch.linalg.cross(triangles[:, 1] - triangles[:, 0], triangles[:, 2] - triangles[:, 0]).norm(dim=1) / 2
 
 
 def _largest_piece(vertices: torch.Tensor, faces: torch.Tensor) -> torch.Tensor:
@@ -151,8 +213,7 @@ def check_skin(skin: dict[str, Triangles], min_gap: float) -> tuple[list[str], d
     narrow = narrow_gap_faces(skin, min_gap)
     for name, faces_found in narrow.items():
         corners = faces_found.reshape(-1, 3)
-        area = float(torch.linalg.cross(faces_found[:, 1] - faces_found[:, 0],
-                                        faces_found[:, 2] - faces_found[:, 0]).norm(dim=1).sum() / 2)
+        area = float(_areas(faces_found).sum())
         if area <= (10 * min_gap) ** 2:
             continue
         lo = [round(x, 4) for x in corners.min(dim=0).values.tolist()]
@@ -172,17 +233,21 @@ def main(argv: list[str] | None = None) -> None:
                         help="write in the model's units (e.g. mm) instead of metres, to overlay on the CAD model")
     parser.add_argument("--min-gap", type=float, default=0.1,
                         help="report gaps narrower than this, in mm (default 0.1)")
+    parser.add_argument("--feature-angle", type=float, default=30.0,
+                        help="sharp edges turn by more than this, in degrees (default 30)")
     args = parser.parse_args(argv)
 
     geometry = GeometryConfig.from_toml(args.geometry)
     deflections = parse_deflections(args.deflect)
     bodies = deflected_bodies(geometry, deflections, in_metres=not args.cad_units)
     skin = outer_skin(bodies)
-    write_ascii_stl(args.out_file, skin)
-    print(f"wrote {args.out_file} with deflections {deflections or 'all zero'}")
+    write_ascii_stl(args.out_file, skin.patches)
+    features_file = args.out_file.with_name(args.out_file.stem + "_features.obj")
+    write_obj_edges(features_file, skin.feature_edges(args.feature_angle))
+    print(f"wrote {args.out_file} with deflections {deflections or 'all zero'}, and its sharp edges to {features_file}")
 
     min_gap = args.min_gap * 1e-3 / (geometry.scale_to_m if args.cad_units else 1.0)  # mm -> output units
-    problems, narrow = check_skin(skin, min_gap)
+    problems, narrow = check_skin(skin.patches, min_gap)
     if problems and narrow:
         narrow_file = args.out_file.with_name(args.out_file.stem + "_narrow_gaps.stl")
         write_ascii_stl(narrow_file, narrow)

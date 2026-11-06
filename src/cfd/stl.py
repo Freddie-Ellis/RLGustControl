@@ -1,4 +1,4 @@
-"""Reading and writing STL files.
+"""Reading and writing STL files, and writing feature edges as OBJ lines.
 
 An STL file is just a list of triangles (facets), each given by its three corner points and a normal. There
 is no shared vertex list, so neighbouring triangles repeat the same corner coordinates.
@@ -80,5 +80,18 @@ def write_ascii_stl(path: Path, solids: dict[str, Triangles]) -> None:
             lines.append("  endfacet")
         lines.append(f"endsolid {name}")
 
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n", encoding="ascii")
+
+
+def write_obj_edges(path: Path, edges: torch.Tensor) -> None:
+    """Write line segments, shape (k, 2, 3), as an OBJ file of points ("v x y z") and lines ("l i j").
+
+    Coordinates use the same format as write_ascii_stl, so edge ends taken from an STL's corners match them
+    exactly (surfaceFeatureExtract matches the edges to the surface's edges by position).
+    """
+    points, index = torch.unique(edges.reshape(-1, 3), dim=0, return_inverse=True)
+    lines = [f"v {x:.7e} {y:.7e} {z:.7e}" for x, y, z in points.tolist()]
+    lines += [f"l {a + 1} {b + 1}" for a, b in index.view(-1, 2).tolist()]  # OBJ numbers points from 1
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n", encoding="ascii")

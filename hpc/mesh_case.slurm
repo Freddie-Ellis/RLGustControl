@@ -26,7 +26,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=32
 #SBATCH --cpus-per-task=1
-#SBATCH --mem=24G   # the 1.3M-cell test mesh peaked at 10.7 GB
+#SBATCH --mem=48G   # the 1.3M-cell test mesh peaked at 10.7 GB; the 0.384 m base cell gives ~3-3.5M cells
 #SBATCH --time=02:00:00
 #SBATCH --output=mesh_%j.out
 #SBATCH --error=mesh_%j.out

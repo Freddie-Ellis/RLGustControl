@@ -89,12 +89,14 @@ The skin is then checked: it must be closed, and no part of it may face another 
 uv run python -m src.cfd.skin cad/uav/geometry.toml hpc/runs/check/skin.stl -d wingtip_r=10 wingtip_l=10 --cad-units
 ```
 
-If the check fails, it says which bodies are affected and where, and writes the offending faces next to the skin as `<name>_narrow_gaps.stl`. `python -m src.cfd.deflect` takes the same arguments and writes the separate bodies before merging.
+If the check fails, it says which bodies are affected and where, and writes the offending faces next to the skin as `<name>_narrow_gaps.stl`.
+
+**Feature edges:** snappyHexMesh refines along sharp edges and snaps points onto them. They are chosen in `skin.py` (written as `<name>_features.obj`, viewable in ParaView) rather than by `surfaceFeatureExtract`: where two bodies meet, their separate triangulations leave a step of a few hundredths of a millimetre along the seam, which a plain angle test sees as a sharp edge, refining every seam to 1 mm and denting the surface when points snap to it. An edge counts only if it turns by more than 30° and both of its faces come from source triangles that are mostly on the outside, which every seam step fails. `python -m src.cfd.deflect` takes the same arguments and writes the separate bodies before merging.
 
 ### 3. Meshing (snappyHexMesh)
 - `blockMesh` builds a background hex domain extending about 20 body lengths upstream and to the sides, and about 40 lengths downstream.
 - `snappyHexMesh` snaps to the named surfaces, with:
-  - uniform 2 mm surface cells over the whole skin, refined to 1 mm where it curves sharply (leading edges) and along sharp edges (trailing edges, tips);
+  - uniform 1.5 mm surface cells over the whole skin, refined to 0.75 mm where it curves sharply (leading edges) and along sharp edges (trailing edges, tips);
   - region refinement over the upper surface and into the wake, where the leading edge vortices are;
   - prism layers on all walls.
 - The full aircraft is meshed (no symmetry plane), because asymmetric control surface deflections and sideslip make the flow asymmetric.

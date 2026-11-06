@@ -4,8 +4,9 @@
 
     constant/triSurface/aircraft.stl   the whole aircraft in metres, control surfaces deflected, with one
                                        named solid per body; each solid becomes a wall patch of that name
+    constant/triSurface/aircraft_features.obj   its sharp edges, for refinement and snapping
     system/blockMeshDict               background box of uniform hex cells around the aircraft
-    system/surfaceFeatureExtractDict   which sharp edges (trailing edges, flap edges) to extract and keep
+    system/surfaceFeatureExtractDict   converts the sharp edges into the form snappyHexMesh reads
     system/snappyHexMeshDict           refinement, snapping and prism-layer settings
     system/meshQualityDict             quality limits snappyHexMesh must respect while moving points
     system/meshSlices                  cutting planes + wall surfaces written as small VTK files to download
@@ -41,9 +42,10 @@ from src.cfd.case import CaseSpec
 from src.cfd.deflect import deflected_bodies
 from src.cfd.geometry import GeometryConfig, StrictModel
 from src.cfd.skin import check_skin, outer_skin
-from src.cfd.stl import write_ascii_stl
+from src.cfd.stl import write_ascii_stl, write_obj_edges
 
 SURFACE = "aircraft"  # name of the combined STL and of its snappyHexMesh geometry entry
+FEATURES_FILE = f"constant/triSurface/{SURFACE}_features.obj"  # its sharp edges, chosen in skin.py
 
 type Vec3 = tuple[float, float, float]
 
@@ -180,10 +182,11 @@ def write_mesh_case(
     s = settings
     bodies = deflected_bodies(geometry, deflections_deg)  # metres, each body closed
     skin = outer_skin(bodies)
-    problems, _ = check_skin(skin, s.skin_min_gap)
+    problems, _ = check_skin(skin.patches, s.skin_min_gap)
     if problems:
         raise ValueError("the aircraft's skin is not fit to mesh (fix the CAD model):\n" + "\n".join(problems))
-    write_ascii_stl(case_dir / "constant" / "triSurface" / f"{SURFACE}.stl", skin)
+    write_ascii_stl(case_dir / "constant" / "triSurface" / f"{SURFACE}.stl", skin.patches)
+    write_obj_edges(case_dir / FEATURES_FILE, skin.feature_edges(180.0 - s.feature_included_angle))
 
     corners = torch.cat([t.reshape(-1, 3) for t in bodies.values()])
     lo, hi = corners.min(dim=0).values, corners.max(dim=0).values
@@ -223,18 +226,15 @@ boundary
 );
 """)
 
-    # Feature edges: edges where the surface turns sharply (trailing edges, flap edges, tip edges).
-    # snappyHexMesh snaps points onto these so sharp edges stay sharp.
+    # Feature edges: edges where the surface turns sharply (tips, flap edges, creases). snappyHexMesh refines
+    # along them and snaps points onto them so sharp edges stay sharp. They are chosen in skin.py rather than
+    # by surfaceFeatureExtract, which would also pick up the tiny steps along every seam between bodies.
     _foam_file(case_dir, "system/surfaceFeatureExtractDict", f"""
 {SURFACE}.stl
 {{
-    extractionMethod extractFromSurface;
-    includedAngle    {s.feature_included_angle:g};
-    // Features from the surface's shape only. The boundaries between patches (bodies) are seams in a smooth
-    // skin at zero deflection, and marking them would refine every seam to feature_level.
-    geometricTestOnly yes;
-    subsetFeatures   {{ nonManifoldEdges no; openEdges no; }}
-    writeObj         no;
+    extractionMethod      extractFromFile;
+    extractFromFileCoeffs {{ featureEdgeFile "{FEATURES_FILE}"; }}
+    writeObj              no;
 }}
 """)
 

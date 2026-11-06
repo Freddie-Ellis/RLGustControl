@@ -1,24 +1,24 @@
 # First test mesh for the AeroGeom_v2 UAV. Loaded by src/cfd/mesh.py (MeshSettings.from_toml).
 # Lengths in metres. Refinement level n gives cells of base_cell_size / 2**n:
-#   level 5 = 16 mm, 7 = 4 mm, 8 = 2 mm, 9 = 1 mm.
-# Deliberately moderate (expected a few million cells) to check the process before refining.
+#   level 5 = 12 mm, 7 = 3 mm, 8 = 1.5 mm, 9 = 0.75 mm.
+# Base cell reduced from 0.512 to 0.384 m (every level 25% finer): ~1.7M -> ~3-3.5M cells.
 
 # Domain, in aircraft lengths (0.52 m): about 10 m upstream, 21 m downstream, 10 m to each side.
 upstream_lengths = 20.0
 downstream_lengths = 40.0
 lateral_lengths = 20.0
-base_cell_size = 0.512
+base_cell_size = 0.384
 
 # Surface refinement (min, max): min everywhere, max where the surface curves sharply (leading edges).
-# Uniform over the whole skin: 2 mm, refined to 1 mm at leading-edge curvature.
+# Uniform over the whole skin: 1.5 mm, refined to 0.75 mm at leading-edge curvature.
 fixed_body_level = [8, 9]
 control_surface_level = [8, 9]
-feature_level = 9                # 1 mm along sharp edges (trailing edges, tips)
+feature_level = 9                # 0.75 mm along sharp edges (trailing edges, tips)
 feature_included_angle = 150.0
 resolve_feature_angle = 30.0
 n_cells_between_levels = 3
 
-# Volume refinement: 16 mm cells around the aircraft and in the near wake (leading-edge vortices).
+# Volume refinement: 12 mm cells around the aircraft and in the near wake (leading-edge vortices).
 near_level = 5
 near_padding_lengths = 0.3
 wake_level = 5

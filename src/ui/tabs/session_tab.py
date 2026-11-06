@@ -26,6 +26,7 @@ from qtpy.QtWidgets import (
 )
 
 from src.config import CONFIG, ROOT
+from src.ml import compare
 from src.ml.distributed import actor, learner, sync
 from src.ml.distributed.files import (
     SESSION,
@@ -176,7 +177,7 @@ class SessionTab(QWidget):
         self.learner_metric.currentTextChanged.connect(lambda _: self._draw_learner())
         self.p_learn = pg.PlotWidget(viewBox=DynamicViewBox())
         self.p_learn.showGrid(x=True, y=True, alpha=0.3)
-        self.p_learn.setLabel("bottom", "SAC updates")
+        self.p_learn.setLabel("bottom", compare.X_LABEL)
         self.learn_curve = self.p_learn.plot([], [], pen=pg.mkPen((255, 190, 60), width=1.5), symbol="o", symbolSize=4)
         learner_row = QHBoxLayout()
         learner_row.addWidget(QLabel("Learner metric"))
@@ -525,7 +526,7 @@ class SessionTab(QWidget):
         df = self.reader.learner_metrics()
         if df.is_empty():
             return
-        columns = [c for c in df.columns if c != "iteration"]
+        columns = compare.metrics_in(df)
         if self.learner_metric.count() != len(columns):
             current = self.learner_metric.currentText() or "critic_loss"
             self.learner_metric.blockSignals(True)
@@ -534,12 +535,10 @@ class SessionTab(QWidget):
             self.learner_metric.setCurrentText(current if current in columns else columns[0])
             self.learner_metric.blockSignals(False)
         metric = self.learner_metric.currentText()
-        if metric in df.columns:
-            y = df[metric].cast(float).to_numpy()
-            x = df["iteration"].to_numpy()
-            keep = np.isfinite(y)  # eval_return is NaN for versions with no eval episode
-            self.learn_curve.setData(x[keep], y[keep])
-            self.p_learn.setLabel("left", metric)
+        ups = self.reader.cfg.algo.updates_per_step if self.reader.cfg else None
+        c = compare.curve(df, metric, ups)  # every logged value, against transitions
+        self.learn_curve.setData(c.x if c else [], c.y if c else [])
+        self.p_learn.setLabel("left", metric)
 
     def _toggle_stop(self) -> None:
         if self.reader is None:

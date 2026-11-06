@@ -223,7 +223,7 @@ class CompareTab(QWidget):
         no_axis = [s.run.name for path, s in runs.items() if compare.x_column(histories[path]) is None]
         self.note.setText(f"Logged no transitions, so cannot be placed: {', '.join(no_axis)}" if no_axis else "")
         for metric, s, line in self._curves:
-            c = compare.curve(histories[s.run.path], metric)
+            c = compare.curve(histories[s.run.path], metric, s.config.algo.updates_per_step)
             line.setData(c.x if c else [], c.y if c else [])
 
     def _tick(self) -> None:

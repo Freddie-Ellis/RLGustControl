@@ -20,6 +20,7 @@ from src.ml.runs import RunSummary
 
 X_LABEL = "transitions"  # data collected so far: one per control step, over all parallel envs
 X_COLUMNS = ("transitions", "env_steps")  # the column that gives it: train.py logs the first, the learner the second
+EPISODE_METRICS = ("train_return", "eval_return", "staleness")  # one value per episode; the rest come from updates
 DEFAULT_METRICS = ("train_return", "eval_return", "critic_loss")
 _NOT_METRICS = {"iteration", *X_COLUMNS}
 
@@ -32,13 +33,17 @@ class Curve:
     y: np.ndarray
 
 
+def metrics_in(metrics: pl.DataFrame) -> list[str]:
+    """The metric columns of one run's history (not its x-axis or row-key columns)."""
+    return [c for c in metrics.columns if c not in _NOT_METRICS]
+
+
 def metric_names(runs: list[RunSummary]) -> list[str]:
-    """Every metric any of the runs logged (not the x-axis columns), in a stable order."""
+    """Every metric any of the runs logged, in a stable order."""
     seen: dict[str, None] = {}
     for s in runs:
-        for column in s.run.read_metrics().columns:
-            if column not in _NOT_METRICS:
-                seen[column] = None
+        for column in metrics_in(s.run.read_metrics()):
+            seen[column] = None
     return list(seen)
 
 
@@ -47,16 +52,23 @@ def x_column(metrics: pl.DataFrame) -> str | None:
     return next((c for c in X_COLUMNS if c in metrics.columns), None)
 
 
-def curve(metrics: pl.DataFrame, metric: str) -> Curve | None:
+def curve(metrics: pl.DataFrame, metric: str, updates_per_step: int | None = None) -> Curve | None:
     """`metric` against transitions, every row that has a value for it. Rows without one are the other kind of row,
     not lost data: e.g. eval_return is empty on train episodes, losses are empty on episode rows (and before the
-    first update). The sort is stable, so rows logged at the same transitions keep their order. None if the run
-    has no such metric, or no transitions column."""
+    first update). None if the run has no such metric, or no transitions column.
+
+    Episode metrics sit at the data collected when the episode came in. SAC's own metrics (losses, alpha, ...) of a
+    run that logs `updates` sit at updates / `updates_per_step`: the data those updates were earned by. A learner
+    often does many logged updates before the next episode arrives; at the data collected they would all stack at
+    one x, while this keeps them in order, in the same unit."""
     x_col = x_column(metrics)
     if x_col is None or metric not in metrics.columns:
         return None
+    x = pl.col(x_col).cast(pl.Float64)
+    if metric not in EPISODE_METRICS and updates_per_step and "updates" in metrics.columns:
+        x = pl.col("updates").cast(pl.Float64) / updates_per_step
     points = (
-        metrics.select(pl.col(x_col).cast(pl.Float64).alias("x"), pl.col(metric).cast(pl.Float64).alias("y"))
+        metrics.select(x.alias("x"), pl.col(metric).cast(pl.Float64).alias("y"))
         .filter(pl.col("x").is_finite() & pl.col("y").is_finite())
         .sort("x", maintain_order=True)
     )

@@ -56,6 +56,7 @@ from src.ml.runs import RunDir, make_env, make_policy
 UPDATE_CHUNK = 50  # updates between checks for new episodes / STOP
 UPDATE_METRICS = ("critic_loss", "actor_loss", "alpha", "entropy", "q_mean")  # what SAC.update reports
 IDLE_SLEEP_S = 0.2  # wait when there is no data and no update budget
+WAITING_REMINDER_S = 60.0  # while idle, say so this often, so a quiet log reads as "waiting", not "hung"
 
 
 class Learner:
@@ -196,15 +197,33 @@ class Learner:
         return stop_path(self.shared).exists() or self.run_dir.stop_requested()
 
     def run(self, max_updates: int | None = None) -> None:
+        """Learn while there is update budget; otherwise wait for the actor's next episodes. Says when it changes
+        between the two (and reminds every WAITING_REMINDER_S while it waits), so its log shows which it is doing."""
+        idle_since: float | None = None  # when it last ran out of data, None while learning
+        reminded = 0.0
         while not self.stop_requested() and (max_updates is None or self.updates < max_updates):
-            self.ingest(new_episodes(self.shared, self.seen))
+            if new_steps := self.ingest(new_episodes(self.shared, self.seen)):
+                if self.in_warmup():
+                    print(f"warmup: {self.transitions}/{self.algo_cfg.warmup_transitions} transitions", flush=True)
+                elif idle_since is not None:
+                    print(f"new data: +{new_steps} env steps, learning", flush=True)
+                idle_since = None  # data arrived, so not idle (warmup data too)
             budget = self.update_budget()
             if max_updates is not None:
                 budget = min(budget, max_updates - self.updates)
             if budget > 0:
                 self.learn(min(budget, UPDATE_CHUNK))
-            else:
-                time.sleep(IDLE_SLEEP_S)  # waiting for the actor
+                continue
+            now = time.monotonic()
+            if idle_since is None:
+                idle_since = reminded = now
+                if not self.in_warmup():
+                    print(f"caught up: waiting for new data ({self.env_steps} env steps, {self.updates} updates so "
+                          "far)", flush=True)
+            elif now - reminded >= WAITING_REMINDER_S:
+                reminded = now
+                print(f"still waiting for data (idle {(now - idle_since) / 60:.0f} min)", flush=True)
+            time.sleep(IDLE_SLEEP_S)  # waiting for the actor
 
 
 @dataclass(frozen=True)

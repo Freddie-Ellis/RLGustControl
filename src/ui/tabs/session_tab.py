@@ -1,9 +1,10 @@
-"""Live view of an actor + learner session, read from their shared folder.
+"""Live view of an actor + learner session, read from their shared folder (picked by session name).
 
 Left, one point per episode (x = episode): return, control loop timing, and which weight version the actor used.
 Right: the latest episode in detail (Cm over time, every tap pressure and surface command as heatmaps) and the learner's metrics.
 Everything comes from files the actor and learner already write, so it works for a session on another machine too.
-A learner and actor launched from here each get a live console window.
+With the learner on the HPC, "Launch sync" mirrors the folder with the HPC's copy (see src/ml/distributed/sync.py).
+A learner, actor or sync launched from here each get a live console window.
 """
 
 from datetime import datetime
@@ -15,10 +16,8 @@ from qtpy.QtCore import QRectF, Qt, QTimer
 from qtpy.QtWidgets import (
     QCheckBox,
     QComboBox,
-    QFileDialog,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QMessageBox,
     QPushButton,
     QSplitter,
@@ -27,8 +26,16 @@ from qtpy.QtWidgets import (
 )
 
 from src.config import CONFIG, ROOT
-from src.ml.distributed import actor, learner
-from src.ml.distributed.files import SHARED, stop_path
+from src.ml.distributed import actor, learner, sync
+from src.ml.distributed.files import (
+    SESSION,
+    config_path,
+    hpc_shared,
+    local_sessions,
+    local_shared,
+    read_config,
+    stop_path,
+)
 from src.ml.distributed.session import EpisodeSummary, SessionReader
 from src.ml.run_config import RunConfig
 from src.ui.utils.dynamic_vb import DynamicViewBox
@@ -42,6 +49,7 @@ KIND_STYLE: dict[str, tuple[tuple[int, int, int], int]] = {  # colour, marker si
     "eval": ((255, 190, 60), 9),
 }
 GOOD, BAD, IDLE = "#4caf50", "#e57373", "#9e9e9e"
+NO_CONFIG = "choose…"
 
 
 def _dot(colour: str, text: str) -> str:
@@ -53,18 +61,29 @@ class SessionTab(QWidget):
         super().__init__()
         self.reader: SessionReader | None = None
 
-        # --- top: folder + status + stop ---
-        self.folder = QLineEdit(str(SHARED))
+        # --- top: session + status + stop ---
+        self.session = QComboBox()
+        self.session.setEditable(True)  # pick an existing session or type a new name
+        self.session.addItems(local_sessions())
+        self.session.setCurrentText(SESSION)
+        self.session.currentTextChanged.connect(self._show_session_folders)
+        self.config = QComboBox()  # only for starting a new session; an existing one keeps its own config
+        self.config.setPlaceholderText(NO_CONFIG)  # no default: a new session's config is always a deliberate choice
+        self._shown_config: RunConfig | None = None  # the existing session's config the box shows, if any
+        self._refresh_config_list()
+        self.config.currentTextChanged.connect(lambda _: self._show_session_config())
+        self._config_cache: tuple[Path, float, RunConfig] | None = None  # config.json, its mtime, parsed
         launch_learner = QPushButton("Launch learner")
         launch_learner.clicked.connect(self._launch_learner)
         launch_actor = QPushButton("Launch actor")
         launch_actor.clicked.connect(self._launch_actor)
+        launch_sync = QPushButton("Launch sync")
+        launch_sync.clicked.connect(self._launch_sync)
+        self.launch_sync = launch_sync
         self.profile = QCheckBox("Profile")
         self.profile.setToolTip(f"Run launched processes under cProfile; stats go to {CONFIG.profiles_dir}")
-        browse = QPushButton("Browse…")
-        browse.clicked.connect(self._browse)
         logs = QPushButton("Logs")
-        logs.setToolTip("Show the learner and actor consoles")
+        logs.setToolTip("Show the learner, actor and sync consoles")
         logs.clicked.connect(self._show_consoles)
         watch = QPushButton("Watch")
         watch.clicked.connect(self._watch)
@@ -73,16 +92,19 @@ class SessionTab(QWidget):
         self.stop_btn.setEnabled(False)
 
         top = QHBoxLayout()
-        top.addWidget(QLabel("Shared folder"))
-        top.addWidget(self.folder, 1)
-        for b in (self.profile, launch_learner, launch_actor, logs, browse, watch, self.stop_btn):
+        top.addWidget(QLabel("Session"))
+        top.addWidget(self.session, 1)
+        top.addWidget(QLabel("Config"))
+        top.addWidget(self.config)
+        for b in (self.profile, launch_learner, launch_actor, launch_sync, logs, watch, self.stop_btn):
             top.addWidget(b)
 
+        self.config_info = QLabel("")  # what the session runs, so launching the wrong thing is visible
         self.actor_status = QLabel(_dot(IDLE, "Actor: not watching"))
         self.learner_status = QLabel(_dot(IDLE, "Learner: -"))
         self.progress = QLabel("")
         status = QHBoxLayout()
-        for lbl in (self.actor_status, self.learner_status, self.progress):
+        for lbl in (self.config_info, self.actor_status, self.learner_status, self.progress):
             lbl.setTextFormat(Qt.TextFormat.RichText)
             status.addWidget(lbl)
             status.addSpacing(24)
@@ -178,12 +200,15 @@ class SessionTab(QWidget):
         self.actor_console = TelemetryConsole(
             "Actor", Readout("return", r"return\s+(\S+)", sparkline=True), parent=self
         )
+        self.sync_console = TelemetryConsole("Sync", Readout("last up", r"\.\.(ep_\d+)\)"), parent=self)
+        self.consoles = (self.learner_console, self.actor_console, self.sync_console)
 
         layout = QVBoxLayout(self)
         layout.addLayout(top)
         layout.addLayout(status)
         layout.addWidget(split, 1)
 
+        self._show_session_folders()
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
         self._timer.start(POLL_MS)
@@ -197,78 +222,185 @@ class SessionTab(QWidget):
         return p
 
     def _launch_learner(self) -> None:
-        """Run the learner in a new process on the shared folder in the box, with learner.py's settings."""
+        """Run the learner here, in a new process on the session's folder. A new session starts with the config
+        chosen in the box; an existing one carries on with its own (learner.session_config decides)."""
         shared = self._shared_for(self.learner_console)
-        if shared is not None:
-            cfg = RunConfig.from_toml(ROOT / learner.CONFIG_FILE)
-            if learner.RUN_NAME:
-                cfg = cfg.model_copy(update={"name": learner.RUN_NAME})
-            self.learner_console.run(
-                learner.run_learner, cfg, shared,
-                seed_from=learner.SEED_FROM, max_updates=learner.MAX_UPDATES,
-                cwd=str(ROOT), profile_to=self._profile_path("learner"),
-            )
+        if shared is None:
+            return
+        new = not config_path(shared).exists() and self.config.currentIndex() >= 0
+        chosen = CONFIG.configs_dir / f"{self.config.currentText()}.toml" if new else None  # None: session_config
+        try:
+            cfg = learner.session_config(shared, chosen)
+        except ValueError as e:
+            self.learner_console.system(str(e), RED)
+            return
+        self.learner_console.system(f"session {shared.name} runs {cfg.describe()}")
+        self.learner_console.run(
+            learner.run_learner, cfg, shared, cwd=str(ROOT), profile_to=self._profile_path("learner")
+        )
 
     def _launch_actor(self) -> None:
-        """Run the actor in a new process on the shared folder in the box, with actor.py's settings."""
+        """Run the actor in a new process on the session's folder. It runs the session's config.json."""
         shared = self._shared_for(self.actor_console)
-        if shared is not None:
-            self.actor_console.run(
-                actor.run_actor, shared,
-                n_envs=actor.N_ENVS, eval_every=actor.EVAL_EVERY, max_episodes=actor.MAX_EPISODES,
-                cwd=str(ROOT), profile_to=self._profile_path("actor"),
+        if shared is None:
+            return
+        cfg = self._session_config()
+        if cfg is None:
+            self.actor_console.system(
+                f"session {shared.name} has no config.json yet: launch the learner (or the sync, if the learner is "
+                "on the HPC) first", RED,
             )
+            return
+        self.actor_console.system(f"session {shared.name} runs {cfg.describe()}")
+        self.actor_console.run(actor.run_actor, shared, cwd=str(ROOT), profile_to=self._profile_path("actor"))
+
+    def _launch_sync(self) -> None:
+        """Mirror the session's folder with its HPC copy, with sync.py's settings, until the session ends."""
+        shared = self._shared_for(self.sync_console)  # a stale STOP here would be sent up and stop the HPC learner
+        if shared is not None:
+            self.sync_console.run(sync.run_sync, shared.name, host=sync.HOST, poll_s=sync.POLL_S, cwd=str(ROOT))
 
     def _profile_path(self, name: str) -> Path | None:
         if not self.profile.isChecked():
             return None
         return CONFIG.profiles_dir / f"{name}_{datetime.now():%Y%m%d-%H%M%S}.prof"
 
+    def _local_folder(self) -> Path | None:
+        """The session's folder on this machine, or None if the name is not a valid folder name."""
+        try:
+            return local_shared(self.session.currentText().strip())
+        except ValueError:
+            return None
+
+    def _session_config(self) -> RunConfig | None:
+        """The session's config.json, or None if the session has none yet. Re-read only when the file changes."""
+        shared = self._local_folder()
+        if shared is None or not (path := config_path(shared)).exists():
+            return None
+        mtime = path.stat().st_mtime
+        if self._config_cache is None or self._config_cache[:2] != (path, mtime):
+            try:
+                self._config_cache = (path, mtime, read_config(shared))
+            except (OSError, ValueError):
+                return None
+        return self._config_cache[2]
+
+    def _refresh_config_list(self) -> None:
+        """List the configs in configs/, re-read each tick so a config made while the UI is open shows up. Keeps the
+        current choice (cleared if its file is gone)."""
+        names = sorted(p.stem for p in CONFIG.configs_dir.glob("*.toml"))
+        if names == [self.config.itemText(i) for i in range(self.config.count())]:
+            return
+        current = self.config.currentText()
+        self.config.blockSignals(True)
+        self.config.clear()
+        self.config.addItems(names)
+        self.config.setCurrentIndex(names.index(current) if current in names else -1)
+        self.config.blockSignals(False)
+        self._shown_config = None  # the files changed: look for the session's config among them again
+
+    def _show_session_config(self) -> None:
+        """Say what the session runs. The config box only applies to a new session, so it is locked otherwise."""
+        cfg = self._session_config()
+        self.config.setEnabled(cfg is None)
+        if cfg is not self._shown_config:  # only when the session (or its config.json, or configs/) changed
+            self._fill_config_box(cfg)
+        if cfg is None:
+            choice = self.config.currentText() or "the config you choose"
+            self.config_info.setText(_dot(IDLE, f"New session: the learner starts it with {choice}"))
+            self.config.setToolTip("The config a new session starts with")
+        else:
+            self.config_info.setText(_dot(GOOD, f"Runs {cfg.describe()}"))
+            self.config.setToolTip("This session already has its config; use a new session name for another one")
+
+    def _fill_config_box(self, cfg: RunConfig | None) -> None:
+        """Show the session's config in the box: the file in configs/ it was made from, or, if no file holds exactly
+        that config any more (edited or renamed since), its name as the session's own copy. A new session gets an
+        empty box, so an old session's config never carries over without being chosen."""
+        self.config.blockSignals(True)
+        if cfg is None:
+            if self._shown_config is not None:  # leaving an existing session
+                self.config.setCurrentIndex(-1)
+            self.config.setPlaceholderText(NO_CONFIG)
+        else:
+            match = next((i for i in range(self.config.count()) if self._config_file_holds(i, cfg)), -1)
+            self.config.setCurrentIndex(match)
+            self.config.setPlaceholderText(f"{cfg.name} (session's own copy)")
+        self.config.blockSignals(False)
+        self._shown_config = cfg
+
+    def _config_file_holds(self, index: int, cfg: RunConfig) -> bool:
+        try:
+            on_disk = RunConfig.from_toml(CONFIG.configs_dir / f"{self.config.itemText(index)}.toml")
+        except (OSError, ValueError):
+            return False
+        return on_disk.model_dump() == cfg.model_dump()
+
+    def _show_session_folders(self) -> None:
+        """Tooltips say which folders the session name maps to, so it is clear what the sync links up."""
+        name = self.session.currentText().strip()
+        self._show_session_config()
+        try:
+            local, remote = local_shared(name), hpc_shared(name)
+        except ValueError as e:
+            self.session.setToolTip(str(e))
+            self.launch_sync.setToolTip(str(e))
+            return
+        self.session.setToolTip(f"Here: {local}\nHPC: {remote}")
+        self.launch_sync.setToolTip(f"Mirror {local} with {sync.HOST}:{remote}, for a learner running on the HPC")
+
     def _shared_for(self, console: TelemetryConsole) -> Path | None:
-        """The shared folder to launch on, or None (with the reason in the console) if launching would be pointless."""
-        shared = Path(self.folder.text())
+        """The session's folder to launch on, or None (with the reason in the console) if launching would be pointless."""
         console.popup()
+        shared = self._local_folder()
+        if shared is None:
+            console.system(f"{self.session.currentText()!r} is not a valid session name", RED)
+            return None
         if stop_path(shared).exists():  # it would exit straight away
             console.system(f"STOP is set in {shared}: clear it first", RED)
             return None
         return shared
 
     def _show_consoles(self) -> None:
-        self.learner_console.popup()
-        self.actor_console.popup()
+        for console in self.consoles:
+            console.popup()
 
     def shutdown(self) -> bool:
         """Called when the window closes. Launched processes write to pipes owned by this window, so they cannot
-        outlive it: ask to stop them (gracefully via STOP, killed if too slow). False = the user cancelled."""
-        running = [c for c in (self.learner_console, self.actor_console) if c.is_running()]
+        outlive it: ask to stop them (gracefully via STOP, killed if too slow). False = the user cancelled.
+        A running sync passes the STOP on, so this also stops a learner on the HPC."""
+        running = [c for c in self.consoles if c.is_running()]  # sync last: it carries the STOP to the HPC
         if not running:
             return True
         names = " and ".join(c.name.lower() for c in running)
         answer = QMessageBox.question(self, "Session running", f"Stop the {names} and close?")
         if answer != QMessageBox.StandardButton.Yes:
             return False
-        stop_path(Path(self.folder.text())).touch()
+        if (shared := self._local_folder()) is not None:
+            stop_path(shared).touch()
         for console in running:
             if not console.wait(STOP_WAIT_MS):
                 console.kill()
         return True
 
-    def _browse(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, "Shared folder", self.folder.text())
-        if path:
-            self.folder.setText(path)
-            self._watch()
-
     def _watch(self) -> None:
-        """Start reading the folder in the box from scratch."""
-        self.reader = SessionReader(Path(self.folder.text()))
+        """Start reading the session's folder from scratch."""
+        shared = self._local_folder()
+        if shared is None:
+            QMessageBox.warning(self, "Session", f"{self.session.currentText()!r} is not a valid session name")
+            return
+        self.reader = SessionReader(shared)
         self.stop_btn.setEnabled(True)
         self.learner_metric.clear()
         self._tick()
 
     # ----- updates -----
     def _tick(self) -> None:
-        if self.reader is None or not self.isVisible():
+        if not self.isVisible():
+            return
+        self._refresh_config_list()
+        self._show_session_config()  # config.json can arrive at any time (the learner or the sync writes it)
+        if self.reader is None:
             return
         if self.reader.poll():
             self._draw_episodes()

@@ -22,9 +22,14 @@ from pathlib import Path
 
 import polars as pl
 
-from src.config import CONFIG
 from src.ml.distributed.actor import run_actor
-from src.ml.distributed.files import config_path, new_episodes, read_episode, stop_path
+from src.ml.distributed.files import (
+    config_path,
+    learner_run_dir,
+    new_episodes,
+    read_episode,
+    stop_path,
+)
 from src.ml.distributed.learner import run_learner
 from src.ml.evaluate import evaluate
 from src.ml.run_config import RunConfig
@@ -49,12 +54,6 @@ def baseline(cfg: RunConfig, n: int) -> float | None:
     returns = [evaluate(env, None, seed=cfg.seed + 1000 + i)[0].mean_return for i in range(n)]
     env.close()  # releases the (mock) rig
     return sum(returns) / len(returns)
-
-
-def newest_run(name: str) -> RunDir | None:
-    """The learner's run directory (it runs in another process, so find it by name)."""
-    runs = sorted(CONFIG.runs_dir.glob(f"*_{name}"))
-    return RunDir(runs[-1]) if runs else None
 
 
 def summarise(shared: Path, base: float | None, run_dir: RunDir | None) -> None:
@@ -131,7 +130,8 @@ def main() -> None:
             if proc.is_alive():
                 proc.terminate()
 
-    summarise(shared, base, newest_run(cfg.name))
+    run_path = learner_run_dir(shared)  # the learner ran in another process; it wrote where its run is
+    summarise(shared, base, RunDir(run_path) if run_path else None)
     if KEEP_SHARED:
         print(f"shared folder kept: {shared}")
     else:

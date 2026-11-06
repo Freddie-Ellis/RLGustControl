@@ -1,8 +1,9 @@
 """Mirrors the tunnel PC's shared folder with the learner's copy on the HPC, using Windows' built-in OpenSSH `sftp`.
 
-    uv run python -m src.ml.distributed.sync      (runs on the tunnel PC)
+    uv run python -m src.ml.distributed.sync [session]      (runs on the tunnel PC; session defaults to SESSION)
 
-The two folders are LOCAL_SHARED and HPC_SHARED in files.py, the one place every script takes them from.
+A session's two folders are local_shared(session) and hpc_shared(session) in files.py: the same name under a
+base folder on each machine, so the learner job and this sync can only meet in the same place.
 
 Start order: submit the learner job on the HPC (it writes config.json), start this, then start the actor once
 config.json has arrived locally. The actor only ever touches LOCAL, so a slow or broken link never stalls the control
@@ -14,7 +15,7 @@ loop: episodes queue in the local outbox and go up when the link is back. The lo
                LOCAL/learner_run.txt          <--get--        REMOTE/learner_run.txt
                runs_dir/<run>/                <--get--        the learner's run directory (metrics, status, policy)
                LOCAL/STOP                     <-both->        REMOTE/STOP
-    (LOCAL = LOCAL_SHARED, REMOTE = HPC_SHARED)
+    (LOCAL = local_shared(session), REMOTE = hpc_shared(session))
 
 Everything except learner_state.pt (only the learner needs it) ends up identical on both sides, so the Session tab
 and the run list work on the tunnel PC as if the learner were local. learner_run.txt still holds the HPC path;
@@ -24,6 +25,9 @@ Every pass is one `sftp` connection to list the remote folders and, if anything 
 Uploads go to `<name>.tmp` on the HPC and are renamed there, metadata before transitions, so the learner never reads
 a half-uploaded episode. Downloads are renamed locally the same way. Restart-safe: what is missing is worked out from
 the listing each pass, so a restart (of this, the actor or the learner job) just carries on.
+
+It finishes by itself once STOP is on both sides, nothing is left to send, and the learner's status says it is done
+(or STOP_LINGER_S has passed, in case its job died). Launched from the Session tab's "Launch sync" too.
 
 Needs key-based SSH login to HOST with no passphrase prompt (`sftp -b` cannot answer prompts), and the tunnel PC
 must be able to reach the login node (on campus, or through the university VPN).
@@ -37,16 +41,19 @@ from pathlib import Path, PurePosixPath
 
 from src.config import CONFIG
 from src.ml.distributed.files import (
-    HPC_SHARED,
-    LOCAL_SHARED,
+    SESSION,
     config_path,
+    hpc_shared,
+    learner_run_dir,
     learner_run_path,
+    local_shared,
     outbox_dir,
     stop_path,
     tmp_path,
     weights_dir,
     weights_version,
 )
+from src.ml.runs import RunDir
 
 # ----- settings for running this file directly -----
 HOST = "iridis"  # an alias in ~/.ssh/config (HostName = a login node you may use, User, IdentityFile)
@@ -56,6 +63,7 @@ POLL_S = 5.0  # seconds between passes; each pass opens a new SSH connection, so
 CONNECT_TIMEOUT_S = 15
 LIST_TIMEOUT_S = 60.0
 TRANSFER_TIMEOUT_S = 600.0  # a whole pass, generous for a backlog of episodes after the link was down
+STOP_LINGER_S = 120.0  # after STOP, wait this long at most for the learner's final status before finishing
 
 type Entries = dict[str, str]  # file name -> "size month day time" from `ls -l`: changes whenever the file does
 
@@ -70,6 +78,12 @@ class RemoteListing:
     outbox: Entries
     weights: Entries
     run: Entries  # the learner's run directory; empty until learner_run.txt has come down
+
+
+@dataclass(frozen=True)
+class PassResult:
+    summary: str | None  # one line for the log, None if there was nothing to report
+    idle: bool  # nothing was transferred
 
 
 @dataclass(frozen=True)
@@ -202,38 +216,69 @@ class Sync:
         if report:
             plan.summary.append(f"{local_path.name} down")
 
-    def run_pass(self) -> str | None:
-        """List, then transfer whatever is due. Returns a one-line summary, or None if there was nothing to do."""
+    def run_pass(self) -> PassResult:
+        """List, then transfer whatever is due."""
         listing = self.list_remote()
         if config_path(self.local).name not in listing.root:
-            return "waiting for the learner to write config.json on the HPC"
+            return PassResult("waiting for the learner to write config.json on the HPC", idle=True)
         plan = self.plan(listing)
         if plan.commands:
             self.sftp(plan.commands, TRANSFER_TIMEOUT_S)
             for d in plan.downloads:
                 tmp_path(d.local).replace(d.local)
                 self.fetched[d.remote] = d.signature
-        return ", ".join(plan.summary) or None
+        return PassResult(", ".join(plan.summary) or None, idle=not plan.commands)
+
+    def learner_finished(self) -> bool:
+        """The learner's status (from our copy of its run directory) says it is no longer running."""
+        path = learner_run_dir(self.local, self.runs_dir)
+        try:
+            return path is not None and RunDir(path).read_status().state != "running"
+        except (OSError, ValueError):  # not down yet, or caught mid-write
+            return False
+
+    def session_over(self, stop_seen: float | None) -> bool:
+        """STOP is on both sides (after a successful pass a local STOP means the HPC has it too), nothing is left to
+        transfer, and the learner has finished, or has had STOP_LINGER_S to do so (its job may have died)."""
+        if stop_seen is None:
+            return False
+        return self.learner_finished() or time.monotonic() - stop_seen > STOP_LINGER_S
 
     def run(self, poll_s: float = POLL_S) -> None:
-        """Pass after pass until Ctrl+C. A failed pass is reported and retried; the actor keeps running regardless."""
+        """Pass after pass until the session is over (see `session_over`) or Ctrl+C. A failed pass is reported and
+        retried; the actor keeps running regardless."""
         print(f"syncing {self.local} <-> {self.host}:{self.remote}", flush=True)
         last = ""
+        stop_seen: float | None = None
         while True:
             try:
-                message = self.run_pass()
+                result = self.run_pass()
             except SyncError as e:
                 message = f"pass failed, retrying: {e}"
                 print(message, file=sys.stderr, flush=True)
             else:
+                message = result.summary or ""
                 if message and message != last:  # don't repeat "waiting ..." every pass
                     print(f"{time.strftime('%H:%M:%S')} {message}", flush=True)
-            last = message or ""
+                if not stop_path(self.local).exists():
+                    stop_seen = None  # STOP cleared: the session carries on
+                elif stop_seen is None:
+                    stop_seen = time.monotonic()
+                if result.idle and self.session_over(stop_seen):
+                    print(f"{time.strftime('%H:%M:%S')} STOP on both sides and nothing left to send: sync done", flush=True)
+                    return
+            last = message
             time.sleep(poll_s)
 
 
-if __name__ == "__main__":
+def run_sync(session: str, host: str = HOST, poll_s: float = POLL_S) -> None:
+    """Mirror the session's local folder with its HPC folder until the session is over. Top level, so the UI can run
+    it in a process."""
     try:
-        Sync(LOCAL_SHARED, HOST, HPC_SHARED).run()
+        Sync(local_shared(session), host, hpc_shared(session)).run(poll_s)
     except KeyboardInterrupt:
         print("sync stopped", flush=True)
+
+
+if __name__ == "__main__":
+    run_sync(sys.argv[1] if len(sys.argv) > 1 else SESSION)

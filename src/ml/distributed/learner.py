@@ -1,6 +1,10 @@
 """The learner: trains SAC on episodes the actor writes to the shared folder and publishes new weights.
 
-    uv run python -m src.ml.distributed.learner      (edit the settings below first)
+    uv run python -m src.ml.distributed.learner [session] [config]     e.g. ... learner test sac_tunnel_mock
+    on the HPC:   sbatch slurm/learner.slurm <session> [config]
+
+The config belongs to the session (see `session_config`): a new session needs one (a name from configs/ or a .toml
+path), and an existing session carries on with the config.json it started with.
 
 Runs on the laptop (GPU if available). Never talks to the actor directly, only through the shared folder:
 
@@ -11,10 +15,12 @@ nothing arrives, the learner waits instead of re-fitting the same buffer over an
 
 Restart-safe: on start it re-reads every episode already in the outbox and carries on from the last saved learner
 state (policy, critics, alpha, optimisers, update count), so stopping the laptop loses no tunnel data and no learning
-beyond the updates since the last publish.
+beyond the updates since the last publish. Its run directory is runs/<session> (the shared folder's name), so a
+resumed session keeps one run directory and one metrics.csv.
 """
 
 import math
+import sys
 import time
 from datetime import datetime
 from pathlib import Path
@@ -25,7 +31,7 @@ from src.config import CONFIG
 from src.ml.algos.replay import ReplayBuffer
 from src.ml.algos.sac import SAC
 from src.ml.distributed.files import (
-    SHARED,
+    SESSION,
     atomic_write_text,
     config_path,
     frame_to_transitions,
@@ -36,18 +42,13 @@ from src.ml.distributed.files import (
     read_config,
     read_episode,
     read_learner_state,
+    shared,
     stop_path,
     write_learner_state,
     write_weights,
 )
 from src.ml.run_config import RunConfig, SACConfig
 from src.ml.runs import RunDir, make_env, make_policy
-
-# ----- settings for running this file directly -----
-CONFIG_FILE = Path("configs/sac_tunnel_mock.toml")  # becomes SHARED/config.json for the actor
-RUN_NAME: str | None = None  # None -> the name in the config
-SEED_FROM: list[Path] = []  # extra outbox folders to pre-load, e.g. open-loop tunnel runs
-MAX_UPDATES: int | None = None  # None -> run until SHARED/STOP appears
 
 UPDATE_CHUNK = 50  # updates between checks for new episodes / STOP
 LOG_EVERY = 50  # updates per metrics row (the Session tab plots these), independent of publishing
@@ -69,7 +70,8 @@ class Learner:
         self.sac.setup(self.policy, self.priv_dim)
         self.version = 0
         self.updates = 0
-        # Resume from the last session. TODO: dont think this works cos if a config exists run learner exits
+        # Resume a session: run_learner only refuses a config.json that differs from this config, and
+        # session_config hands an existing session its own config, so the same session always resumes here.
         if (state := read_learner_state(shared, self.sac.device)) is not None:
             self.sac.load_state_dict(state["sac"])
             self.version, self.updates = state["version"], state["updates"]
@@ -182,6 +184,31 @@ class Learner:
                 time.sleep(IDLE_SLEEP_S)  # waiting for the actor
 
 
+def find_config(name: str) -> Path:
+    """A config by name from configs/ (`sac_tunnel_mock`) or by path (`configs/sac_tunnel_mock.toml`)."""
+    path = Path(name)
+    return path if path.suffix == ".toml" else CONFIG.configs_dir / f"{name}.toml"
+
+
+def session_config(shared: Path, config_file: Path | None) -> RunConfig:
+    """The config a session runs on. A session keeps the config it started with (its config.json), so only a new
+    session needs `config_file`; one that differs from an existing session's is refused. Raises ValueError."""
+    existing = read_config(shared) if config_path(shared).exists() else None
+    if config_file is None:
+        if existing is None:
+            raise ValueError(f"session {shared.name!r} is new: choose a config for it (e.g. sac_tunnel_mock)")
+        return existing
+    if not config_file.exists():
+        raise ValueError(f"no config file {config_file}")
+    cfg = RunConfig.from_toml(config_file)
+    if existing is not None and existing.model_dump() != cfg.model_dump():
+        raise ValueError(
+            f"session {shared.name!r} runs {existing.name}, not {config_file.stem}: leave the config out to carry on, "
+            "or start a new session"
+        )
+    return cfg
+
+
 def run_learner(
     config: RunConfig,
     shared: Path,
@@ -195,8 +222,12 @@ def run_learner(
     init_shared(shared, config)
 
     torch.manual_seed(config.seed)
-    run = RunDir.create(config, CONFIG.runs_dir)
+    try:
+        run = RunDir.open_named(config, shared.name, CONFIG.runs_dir)  # runs/<session>, the same name as the session
+    except ValueError as e:
+        raise SystemExit(str(e)) from e
     print(f"RUN_DIR {run.path}", flush=True)
+    print(f"session {shared.name}: {config.describe()}", flush=True)
     atomic_write_text(learner_run_path(shared), str(run.path))  # lets the Session tab find the learner's metrics
     learner = Learner(config, shared, run)
     for folder in seed_from or []:
@@ -223,7 +254,9 @@ def run_learner(
 
 
 if __name__ == "__main__":
-    cfg = RunConfig.from_toml(CONFIG_FILE)
-    if RUN_NAME:
-        cfg = cfg.model_copy(update={"name": RUN_NAME})
-    run_learner(cfg, SHARED, seed_from=SEED_FROM, max_updates=MAX_UPDATES)
+    folder = shared(sys.argv[1] if len(sys.argv) > 1 else SESSION)
+    try:
+        cfg = session_config(folder, find_config(sys.argv[2]) if len(sys.argv) > 2 else None)
+    except ValueError as e:
+        raise SystemExit(str(e)) from e
+    run_learner(cfg, folder)

@@ -34,10 +34,39 @@ from src.ml.run_config import RunConfig
 TRANSITION_COLUMNS = ("obs", "priv", "act", "rew", "next_obs", "next_priv", "done")
 _WEIGHTS_RE = re.compile(r"policy_v(\d+)\.pt")
 
-# ----- where the shared folder is: the one place to change it -----
-LOCAL_SHARED = Path(r"C:\rl_shared\test")  # tunnel PC (and laptop). Never inside OneDrive.
-HPC_SHARED = PurePosixPath("/scratch/fe1g22/wt_testing/test")  # the learner's copy on Iridis
-SHARED = Path(HPC_SHARED) if sys.platform == "linux" else LOCAL_SHARED  # this machine's copy: Linux = the HPC
+# ----- where sessions live: the one place to change it -----
+# A session is a shared folder with the same name on both machines: LOCAL_SESSIONS/<name> and HPC_SESSIONS/<name>.
+LOCAL_SESSIONS = Path(r"C:\rl_shared")  # tunnel PC (and laptop). Never inside OneDrive.
+HPC_SESSIONS = PurePosixPath("/scratch/fe1g22/wt_testing")  # the learner's copies on Iridis
+SESSION = "test"  # used when a script is run without a session name
+_SESSION_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")  # a plain folder name, safe in paths and sftp commands
+
+
+def _checked(session: str) -> str:
+    if not _SESSION_RE.fullmatch(session):
+        raise ValueError(f"session name {session!r}: use letters, digits, '_', '.' and '-' only")
+    return session
+
+
+def local_shared(session: str) -> Path:
+    return LOCAL_SESSIONS / _checked(session)
+
+
+def hpc_shared(session: str) -> PurePosixPath:
+    return HPC_SESSIONS / _checked(session)
+
+
+def shared(session: str) -> Path:
+    """This machine's copy of the session's folder: Linux = the HPC."""
+    return Path(hpc_shared(session)) if sys.platform == "linux" else local_shared(session)
+
+
+def local_sessions() -> list[str]:
+    """Names of the sessions that already have a folder here, newest first."""
+    if not LOCAL_SESSIONS.is_dir():
+        return []
+    folders = [p for p in LOCAL_SESSIONS.iterdir() if p.is_dir() and _SESSION_RE.fullmatch(p.name)]
+    return [p.name for p in sorted(folders, key=lambda p: p.stat().st_mtime, reverse=True)]
 
 
 # ----- layout -----

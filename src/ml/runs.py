@@ -1,6 +1,7 @@
 """On-disk format for training runs.
 
-runs/<YYYYmmdd-HHMMSS>_<name>/
+runs/<YYYYmmdd-HHMMSS>_<name>/   a training run (train.py)
+runs/<session>/                  a distributed learner's run: named after its session and carried on when it resumes
     config.json   the exact RunConfig used
     metrics.csv   one row per iteration, appended while training (read with Polars)
     policy.pt     policy weights (state_dict)
@@ -44,11 +45,27 @@ class RunDir:
     @classmethod
     def create(cls, cfg: RunConfig, root: Path = CONFIG.runs_dir) -> RunDir:
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        run = cls(root / f"{stamp}_{cfg.name}")
-        run.path.mkdir(parents=True, exist_ok=False)
-        run.config_path.write_text(cfg.model_dump_json(indent=2))
-        run.write_status(RunStatus(started=datetime.now()))
+        return cls(root / f"{stamp}_{cfg.name}")._init(cfg)
+
+    @classmethod
+    def open_named(cls, cfg: RunConfig, name: str, root: Path = CONFIG.runs_dir) -> RunDir:
+        """`root/name`: created if new, otherwise carried on (marked running again; metrics keep appending).
+        Raises ValueError if the existing run was made with a different config."""
+        run = cls(root / name)
+        if not run.status_path.exists():
+            return run._init(cfg, exist_ok=True)  # an empty folder is fine to start in
+        if run.read_config().model_dump() != cfg.model_dump():
+            raise ValueError(f"{run.path} is a run with a different config; use another name or delete it")
+        status = run.read_status()
+        status.state, status.finished, status.error = "running", None, None
+        run.write_status(status)
         return run
+
+    def _init(self, cfg: RunConfig, exist_ok: bool = False) -> RunDir:
+        self.path.mkdir(parents=True, exist_ok=exist_ok)
+        self.config_path.write_text(cfg.model_dump_json(indent=2))
+        self.write_status(RunStatus(started=datetime.now()))
+        return self
 
     # ----- paths -----
     @property
@@ -122,13 +139,14 @@ def list_runs(root: Path = CONFIG.runs_dir) -> list[RunSummary]:
     if not root.exists():
         return []
     out: list[RunSummary] = []
-    for path in sorted(root.iterdir(), reverse=True):
+    for path in root.iterdir():
         run = RunDir(path)
         try:
             out.append(RunSummary(run, run.read_config(), run.read_status()))
         except (OSError, ValueError):
             continue
-    return out
+    # By start time, not name: session-named runs have no timestamp in their name.
+    return sorted(out, key=lambda s: s.status.started.replace(tzinfo=None), reverse=True)
 
 
 def make_env(cfg: RunConfig, n_envs: int, seed: int | None = None) -> Env:

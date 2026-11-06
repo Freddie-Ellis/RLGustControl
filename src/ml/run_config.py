@@ -121,6 +121,14 @@ class RunConfig(StrictModel):
     def to_toml(self) -> str:
         return _to_toml(self.model_dump(mode="json"))
 
+    def describe(self) -> str:
+        """One line saying what this runs on, e.g. 'sac_tunnel_mock on wind_tunnel (mock rig)'. Plain ASCII: it is
+        printed to consoles that may not be UTF-8."""
+        env = self.env.kind
+        if isinstance(self.env, WindTunnelEnvConfig):
+            env += f" ({self.env.params.io} rig)"
+        return f"{self.name} on {env}"
+
 
 type _TomlValue = str | int | float | bool | list[_TomlValue] | dict[str, _TomlValue] | None
 

@@ -1,6 +1,8 @@
 """The actor: runs episodes with frozen policy weights and writes each one to the shared folder.
 
-    uv run python -m src.ml.distributed.actor      (edit the settings below first; start the learner before it)
+    uv run python -m src.ml.distributed.actor [session]      (start the learner first; session defaults to SESSION)
+
+It runs whatever the session's config.json says (the learner writes it from the config the session was started with).
 
 It never learns and never waits on the learner. Between episodes it picks up the newest weights, so one episode
 always runs on one policy version. In the tunnel it runs on the tunnel PC with n_envs = 1; in simulation it can run
@@ -17,21 +19,18 @@ import torch
 from torch import Tensor
 
 from src.ml.distributed.files import (
-    SHARED,
+    SESSION,
     EpisodeMetaData,
+    config_path,
     latest_weights,
     read_config,
+    shared,
     stop_path,
     transitions_to_frame,
     write_episode,
 )
 from src.ml.run_config import RunConfig
 from src.ml.runs import make_env, make_policy
-
-# ----- settings for running this file directly -----
-N_ENVS = 1  # parallel envs: 1 in the tunnel, more only for sim envs
-EVAL_EVERY: int | None = None  # every k-th episode deterministic; None -> from the config
-MAX_EPISODES: int | None = None  # None -> run until SHARED/STOP appears
 
 type Episode = tuple[EpisodeMetaData, pl.DataFrame]
 
@@ -138,8 +137,12 @@ def run_actor(
     max_episodes: int | None = None,
     session_id: str | None = None,
 ) -> None:
-    """Build the env and policy from SHARED/config.json and run episodes until STOP (or `max_episodes`)."""
+    """Build the env and policy from shared/config.json and run episodes until STOP (or `max_episodes`).
+    n_envs > 1 only for sim envs (the tunnel is one rig); eval_every None -> the config's."""
+    if not config_path(shared).exists():
+        raise SystemExit(f"no config.json in {shared} yet: start the learner (and the sync, if it is on the HPC) first")
     cfg = read_config(shared)
+    print(f"session {shared.name}: {cfg.describe()}", flush=True)
     actor = Actor(cfg, shared, n_envs=n_envs, session_id=session_id)
     try:
         actor.run(eval_every=eval_every or cfg.distributed.eval_every, max_episodes=max_episodes)
@@ -148,4 +151,5 @@ def run_actor(
 
 
 if __name__ == "__main__":
-    run_actor(SHARED, n_envs=N_ENVS, eval_every=EVAL_EVERY, max_episodes=MAX_EPISODES)
+    session = sys.argv[1] if len(sys.argv) > 1 else SESSION
+    run_actor(shared(session))

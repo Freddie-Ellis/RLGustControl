@@ -62,7 +62,7 @@ hinge.p2 = [131.65, 74.3, -6.9]
 
 [[control_surfaces]]
 name = "le_flap_l"
-stl = "AeroGeom_Meshing - MirrorLEFlap^AeroGeom_Meshing-3.STL"
+stl = "AeroGeom_Meshing - MirrorLEFlap^AeroGeom_Meshing-4.STL"
 min_deflection_deg = -25.0
 max_deflection_deg = 25.0
 hinge.p1 = [131.65, -74.3, -6.9]

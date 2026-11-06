@@ -20,8 +20,9 @@ How snappyHexMesh builds the mesh, and how the settings map onto it:
     2. Snapping: move the jagged cell faces onto the STL surfaces and their feature edges.
     3. Layers: push the mesh away from the walls and insert thin prism cells to resolve the boundary layer.
 
-Before writing the STL, the touching bodies are reduced to the aircraft's outer skin (see skin.py), so that
-faces hidden between bodies don't trigger refinement along every seam.
+Before writing the STL, the touching bodies are merged into the aircraft's outer skin (their boolean union,
+see skin.py), so that faces hidden between bodies don't trigger refinement along every seam. The skin is checked
+first (closed, no slits narrower than skin_min_gap) and the case is not written if it fails.
 
 Run as a script (normally from the Slurm job), with a case file from configs/cases/:
     python -m src.cfd.mesh configs/cases/uav_wingtip_10.toml <case_dir> --n-procs 32
@@ -39,7 +40,7 @@ from pydantic import Field
 from src.cfd.case import CaseSpec
 from src.cfd.deflect import deflected_bodies
 from src.cfd.geometry import GeometryConfig, StrictModel
-from src.cfd.skin import outer_skin
+from src.cfd.skin import check_skin, outer_skin
 from src.cfd.stl import write_ascii_stl
 
 SURFACE = "aircraft"  # name of the combined STL and of its snappyHexMesh geometry entry
@@ -91,9 +92,9 @@ class MeshSettings(StrictModel):
     n_layer_iter: int = 50           # layer addition: overall iterations (nLayerIter)
     n_relaxed_layer_iter: int = 20   # ...after which the relaxed quality limits apply (nRelaxedIter)
 
-    # Faces of one body closer than this to a facing face of another are hidden (flush) and removed from
-    # the skin. 0.3 mm: above the STL export deviation and the thin strips beside rounded noses, far below cells.
-    skin_flush_tol: float = Field(default=3e-4, gt=0)
+    # The skin must have no slits narrower than this (m): far too thin to mesh, they would only attract
+    # refinement. Checked before writing the case (see skin.check_skin).
+    skin_min_gap: float = Field(default=1e-4, gt=0)
 
     max_local_cells: int = 5_000_000     # per processor, during castellation
     max_global_cells: int = 100_000_000  # whole mesh; castellation stops refining beyond this
@@ -178,7 +179,11 @@ def write_mesh_case(
     """
     s = settings
     bodies = deflected_bodies(geometry, deflections_deg)  # metres, each body closed
-    write_ascii_stl(case_dir / "constant" / "triSurface" / f"{SURFACE}.stl", outer_skin(bodies, s.skin_flush_tol))
+    skin = outer_skin(bodies)
+    problems, _ = check_skin(skin, s.skin_min_gap)
+    if problems:
+        raise ValueError("the aircraft's skin is not fit to mesh (fix the CAD model):\n" + "\n".join(problems))
+    write_ascii_stl(case_dir / "constant" / "triSurface" / f"{SURFACE}.stl", skin)
 
     corners = torch.cat([t.reshape(-1, 3) for t in bodies.values()])
     lo, hi = corners.min(dim=0).values, corners.max(dim=0).values
@@ -225,7 +230,9 @@ boundary
 {{
     extractionMethod extractFromSurface;
     includedAngle    {s.feature_included_angle:g};
-    // Open edges are the seams between bodies left by trimming the skin, not real edges, so skip them.
+    // Features from the surface's shape only. The boundaries between patches (bodies) are seams in a smooth
+    // skin at zero deflection, and marking them would refine every seam to feature_level.
+    geometricTestOnly yes;
     subsetFeatures   {{ nonManifoldEdges no; openEdges no; }}
     writeObj         no;
 }}

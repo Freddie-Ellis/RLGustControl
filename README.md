@@ -27,8 +27,8 @@ CFD Process
 The control model is trained on a surrogate model of the delta wing UAV's aerodynamics. The surrogate is built from a dataset of RANS CFD solutions covering a range of flight conditions and control surface deflections. The pipeline is scripted end to end: a geometry and a list of cases go in, and a table of forces, moments and surface pressures comes out.
 
 ```
-SolidWorks part ─► one STL per body ─► fill small holes ─► rotate control surfaces about hinge axes (per case)
-        ─► snappyHexMesh ─► simpleFoam (RANS, k-ω SST) ─► post-process ─► Parquet dataset ─► surrogate
+SolidWorks part ─► one STL per body ─► rotate control surfaces about hinge axes (per case)
+        ─► merge into one outer skin and check it ─► snappyHexMesh ─► simpleFoam (RANS, k-ω SST) ─► post-process ─► Parquet dataset ─► surrogate
 ```
 
 Status: steps 1 and 2 are implemented in `src/cfd/`, and step 3 has a first test version. Steps 4 and 5 are planned.
@@ -39,6 +39,7 @@ Status: steps 1 and 2 are implemented in `src/cfd/`, and step 3 has a first test
 | `src/cfd/stl.py` | Reads ASCII and binary STL files; writes multi-solid ASCII STL |
 | `src/cfd/surface.py` | Checks that a surface is closed and fills small holes |
 | `src/cfd/deflect.py` | Rotates control surfaces and builds the deflected aircraft; also runs as a script |
+| `src/cfd/skin.py` | Merges the bodies into one closed outer skin (boolean union) and checks it for holes and narrow gaps |
 | `src/cfd/case.py` | Loads a case file (`configs/cases/*.toml`): geometry, mesh settings and deflections for one case |
 | `src/cfd/mesh.py` | Writes a ready-to-mesh OpenFOAM case (aircraft STL and every dictionary) from a case file |
 | `src/cfd/mesh_report.py` | Reads the checkMesh and snappyHexMesh logs, applies the acceptance limits, writes `mesh_report.json` |
@@ -50,11 +51,16 @@ Status: steps 1 and 2 are implemented in `src/cfd/`, and step 3 has a first test
 - `cad/<model>/geometry.toml` lists every body with its STL file, and for each control surface its hinge axis and deflection limits. It also holds the reference point, length and area used to normalise the force coefficients. Unknown keys, bad names and inconsistent limits are reported as errors on load.
 
 **SolidWorks STL export settings** (Save As → STL → Options):
-- Binary output, units mm, **Custom** resolution: deviation about 0.01–0.02 mm and angle about 1–2°. Coarser settings leave the leading edges visibly faceted, and snappyHexMesh copies that faceting into the mesh.
+- Binary output, units mm, **Custom** resolution: deviation 0.04 mm (the smallest SolidWorks allows) and angle 1°. Coarser settings leave the leading edges visibly faceted, and snappyHexMesh copies that faceting into the mesh.
 - Tick **"Do not translate STL output data to positive space"**. Otherwise SolidWorks shifts the model and the hinge points no longer line up with it. If an export has been shifted, set `stl_offset` in `geometry.toml` to the shift.
 - Untick **"Save all components of an assembly in a single file"**, so you get one file per body.
 
-**Closed surfaces:** every body must be closed (watertight) to mesh reliably. SolidWorks leaves thin slits where the loft meets the wing on the main body, even after healing the part as a Parasolid. These are filled automatically on load, as long as each hole's perimeter is at most `max_hole_perimeter` in `geometry.toml` (currently 20 mm; the largest slit is 13.1 mm). A bigger hole stops the pipeline with its size and location, so a real gap in the CAD can't be covered over unnoticed.
+**Closed surfaces:** every body must be closed (watertight). The current exports all are. As a safety net, small holes are filled on load if their perimeter is at most `max_hole_perimeter` in `geometry.toml` (20 mm); a bigger hole stops the pipeline with its size and location, so a real gap in the CAD can't be covered over unnoticed.
+
+**How bodies may meet:** the bodies are merged into one outer skin before meshing (see step 3), and the merge only gives a clean skin if bodies **overlap, or meet on flat faces in a plane of constant x, y or z**. Avoid:
+- a curved surface shared by two bodies with zero clearance, such as a flap nose in a cove of the same radius. The two exports are triangulated separately and weave through each other. Fill the cove instead, so the nose is buried in the main body (done for every flap in `AeroGeom_Meshing`).
+- flush faces at an angle to the axes, such as the swept leading-edge flap ends. STL stores coordinates in single precision, so the two copies end up a hair apart. Make the bodies overlap instead (the leading-edge flaps are 0.3 mm longer at each end).
+- slits and near-misses, such as a loft ending just short of the wing. Extend one body into the other.
 
 ### 2. Control surface deflection
 Each hinge axis is given as two points, `p1` and `p2`, measured in SolidWorks. Positive deflection is a right-hand rotation about the axis pointing from `p1` to `p2`: point your right thumb from `p1` to `p2`, and your fingers curl in the positive direction. Swapping the points reverses the sign.
@@ -67,7 +73,7 @@ The port surfaces are mirror images of the starboard ones. A mirror reverses the
 | Leading-edge flap | leading edge down |
 | Upper and lower splitter flaps | open (upper swings up, lower swings down) |
 
-For each case, every control surface is rotated about its hinge by its deflection (surfaces not listed stay at 0) and converted to metres. The whole aircraft is written as one ASCII STL, `aircraft.stl`, with each body as its own named solid. Each solid becomes its own OpenFOAM patch, named after the body. Bodies are not merged into one surface: where a deflected surface overlaps a fixed one, snappyHexMesh keeps only the fluid outside both. Angles outside a surface's limits are rejected.
+For each case, every control surface is rotated about its hinge by its deflection (surfaces not listed stay at 0) and converted to metres. Angles outside a surface's limits are rejected.
 
 Rotation of a point **p** about the hinge axis through **a** with unit direction **k** by angle δ (Rodrigues' formula):
 
@@ -75,18 +81,20 @@ Rotation of a point **p** about the hinge axis through **a** with unit direction
 p' = a + (p−a)cosδ + (k × (p−a))sinδ + k(k·(p−a))(1−cosδ)
 ```
 
-To write the deflected aircraft and check it in a viewer (`--cad-units` writes mm in the part frame, so it overlays on the SolidWorks model):
+**Outer skin:** the deflected bodies are then merged into one closed surface, their boolean union (computed with the `manifold3d` library). The union cuts the triangles where bodies meet and keeps only the outside, so no hidden faces are left for snappyHexMesh to refine around. Each triangle remembers which body it came from, and the skin is written as one ASCII STL, `aircraft.stl`, with each body as its own named solid. Each solid becomes its own OpenFOAM patch, named after the body.
+
+The skin is then checked: it must be closed, and no part of it may face another across a gap narrower than 0.1 mm (the walls of slits too thin to mesh). To write the skin for a set of deflections and check it (`--cad-units` writes mm in the part frame, so it overlays on the SolidWorks model):
 
 ```
-uv run python -m src.cfd.deflect cad/uav/geometry.toml hpc/runs/check/aircraft.stl -d wingtip_r=10 wingtip_l=10 --cad-units
+uv run python -m src.cfd.skin cad/uav/geometry.toml hpc/runs/check/skin.stl -d wingtip_r=10 wingtip_l=10 --cad-units
 ```
 
-In Python, `write_case_geometry(geometry, {"wingtip_r": 10.0}, path)` writes the aircraft STL for one case in metres.
+If the check fails, it says which bodies are affected and where, and writes the offending faces next to the skin as `<name>_narrow_gaps.stl`. `python -m src.cfd.deflect` takes the same arguments and writes the separate bodies before merging.
 
 ### 3. Meshing (snappyHexMesh)
 - `blockMesh` builds a background hex domain extending about 20 body lengths upstream and to the sides, and about 40 lengths downstream.
 - `snappyHexMesh` snaps to the named surfaces, with:
-  - surface refinement on the leading edges and the control surfaces, including where they meet the main body;
+  - uniform 2 mm surface cells over the whole skin, refined to 1 mm where it curves sharply (leading edges) and along sharp edges (trailing edges, tips);
   - region refinement over the upper surface and into the wake, where the leading edge vortices are;
   - prism layers on all walls.
 - The full aircraft is meshed (no symmetry plane), because asymmetric control surface deflections and sideslip make the flow asymmetric.
@@ -105,9 +113,9 @@ wingtip_l = 10.0
 ```
 
 **Running a mesh on Iridis 6** (the whole process runs on the HPC):
-1. Once, on the login node: `bash hpc/setup_python.sh`. It creates `.venv-hpc` with the CPU build of PyTorch and Pydantic.
+1. Once, on the login node: `bash hpc/setup_python.sh`. It creates `.venv-hpc` with the CPU build of PyTorch, Pydantic and manifold3d. Rerun it whenever these dependencies change.
 2. Submit one case: `sbatch hpc/mesh_case.slurm configs/cases/uav_wingtip_10.toml`. To submit many, put their case files in one folder and run `bash hpc/submit_cases.sh <folder>`. This submits a Slurm array with one task per case file.
-3. The job checks the case file, then writes the case (aircraft STL and dictionaries) to `hpc/runs/<case name>_<jobid>/`. It then runs `surfaceFeatureExtract`, `blockMesh`, `snappyHexMesh` (MPI), `reconstructParMesh` and `checkMesh -allGeometry -allTopology`.
+3. The job checks the case file, builds and checks the outer skin (stopping within a minute if the check fails), then writes the case (aircraft STL and dictionaries) to `hpc/runs/<case name>_<jobid>/`. It then runs `surfaceFeatureExtract`, `blockMesh`, `snappyHexMesh` (MPI), `reconstructParMesh` and `checkMesh -allGeometry -allTopology`.
 4. It finishes with `mesh_report.json`: cell counts and types, maximum non-orthogonality and skewness, prism-layer coverage per wall, and pass/fail against the `[acceptance]` limits in the mesh settings. The job exits with an error if the mesh fails.
 5. To inspect the mesh, download `postProcessing/meshSlices/`. It holds cutting planes through the root and each starboard control surface, plus the wall surfaces, as small VTK files carrying cell quality fields. Faces that checkMesh flags as bad are in `postProcessing/checkMesh/`. The full mesh is too large to open on a laptop.
 

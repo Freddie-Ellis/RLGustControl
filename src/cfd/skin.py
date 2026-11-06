@@ -1,112 +1,196 @@
-"""Reduce the touching bodies of the aircraft to its outer (wetted) skin before meshing.
+"""Merge the touching bodies of the aircraft into its outer (wetted) skin before meshing, and check it.
 
-The aircraft is modelled as separate closed bodies that touch: a flap's round nose sits flush in its cove,
-its end faces sit flush against the main body, and when deflected part of it is buried inside the main body.
-snappyHexMesh would see those hidden faces too. Two faces lying on top of each other with opposite normals
-look like extremely sharp curvature, so it refines around them to the maximum level, and the refinement
-spills out onto the outer skin as dense bands along every seam, even at zero deflection.
+The aircraft is modelled as separate closed bodies that touch or overlap: a flap's nose is buried in the main
+body, and its end faces sit flush against it. snappyHexMesh would see those hidden faces too. Two faces lying
+on top of each other with opposite normals look like extremely sharp curvature, so it refines around them to
+the maximum level, and the refinement spills out onto the outer skin as dense bands along every seam.
 
-`outer_skin` removes, from every body, the faces that are hidden:
-    flush   lying against another body's face (facing it, closer than flush_tol);
-    buried  inside another body.
-What remains is the wetted surface, still split by body, so each body keeps its own patch. The skin is no
-longer closed: it has open edges along the seams between bodies, and cracks there of the order of the STL
-export deviation (well below any cell size), which snappyHexMesh does not mind.
+`outer_skin` replaces the bodies with their boolean union, computed with the manifold3d library. The union
+cuts triangles along the curves where bodies meet and keeps only the parts on the outside, so the result is a
+single closed surface with no hidden faces. Each triangle of the union remembers which body it came from, so
+each body still becomes its own patch (for per-surface forces and hinge moments).
+
+For this to work, bodies must overlap or share flat faces. Two separately triangulated copies of the same
+curved surface (a flap nose in a zero-clearance cove) weave through each other by up to the STL export
+deviation, and the union then keeps slivers of both. `check_skin` finds such problems, and any other narrow
+slit, so they can be fixed in the CAD model rather than patched here.
+
+Run as a script to write the skin and check it, e.g.:
+    uv run python -m src.cfd.skin cad/uav/geometry.toml out/skin_zero_mm.stl --cad-units
 """
 
+import argparse
+from pathlib import Path
+
+import manifold3d
+import numpy as np
 import torch
 
-from src.cfd.geometry_check import distance_to_facing
-from src.cfd.stl import Triangles, facet_normals
-
-# Ray directions for the inside test: tilted slightly off the axes so rays don't run along mesh edges.
-# A point counts as inside if most rays cross the surface an odd number of times.
-_RAYS = torch.tensor([[0.0123, 0.0217, 1.0], [0.0191, -0.0137, -1.0], [1.0, 0.0173, 0.0229]], dtype=torch.float64)
-_RAYS = _RAYS / _RAYS.norm(dim=1, keepdim=True)
+from src.cfd.deflect import deflected_bodies, parse_deflections
+from src.cfd.geometry import GeometryConfig
+from src.cfd.stl import Triangles, facet_normals, write_ascii_stl
+from src.cfd.surface import open_edge_count, weld
 
 
-def _crossings(points: torch.Tensor, triangles: Triangles, direction: torch.Tensor) -> torch.Tensor:
-    """Number of times a ray from each point along `direction` crosses the triangles (Moller-Trumbore)."""
-    a, e1, e2 = triangles[:, 0], triangles[:, 1] - triangles[:, 0], triangles[:, 2] - triangles[:, 0]
-    pvec = torch.linalg.cross(direction.expand_as(e2), e2)
-    det = (e1 * pvec).sum(-1)
-    ok = det.abs() > 1e-30
-    inv = 1.0 / torch.where(ok, det, torch.ones_like(det))
-    tvec = points[:, None, :] - a[None]
-    u = (tvec * pvec[None]).sum(-1) * inv
-    qvec = torch.linalg.cross(tvec, e1[None].expand_as(tvec))
-    v = (qvec * direction).sum(-1) * inv
-    t = (qvec * e2[None]).sum(-1) * inv
-    hit = ok & (u >= 0) & (v >= 0) & (u + v <= 1) & (t > 0)
-    return hit.sum(dim=1)
+def _to_manifold(triangles: Triangles, name: str) -> manifold3d.Manifold:
+    """Convert a closed surface to a manifold3d solid, tagged with its own original id."""
+    vertices, faces = weld(triangles)
+    mesh = manifold3d.Mesh64(vert_properties=vertices.numpy(), tri_verts=faces.numpy().astype(np.uint32))
+    solid = manifold3d.Manifold(mesh)
+    if solid.status() != manifold3d.Error.NoError:
+        raise ValueError(f"{name} is not a closed, consistently oriented surface: {solid.status()}")
+    return solid.as_original()
 
 
-def inside(points: torch.Tensor, closed: Triangles, chunk: int = 256, tri_chunk: int = 8192) -> torch.Tensor:
-    """Whether each point lies inside the closed surface `closed` (majority vote over three rays)."""
-    votes = torch.zeros(len(points), dtype=torch.int64)
-    corners = closed.reshape(-1, 3, 3)
-    lo, hi = corners.min(dim=1).values, corners.max(dim=1).values
-    span = float((closed.reshape(-1, 3).max(dim=0).values - closed.reshape(-1, 3).min(dim=0).values).norm())
-    for direction in _RAYS:
-        # Only triangles near the ray's line can be crossed: keep those whose bounding box is within the
-        # ray's sideways drift of the points' box, measured across the ray (in the two other axes).
-        axis = int(direction.abs().argmax())
-        others = [i for i in range(3) if i != axis]
-        drift = span * float(direction[others].abs().max()) + 1e-9
-        for i in range(0, len(points), chunk):
-            p = points[i:i + chunk]
-            p_lo, p_hi = p.min(dim=0).values, p.max(dim=0).values
-            near = torch.ones(len(closed), dtype=torch.bool)
-            for k in others:
-                near &= (hi[:, k] >= p_lo[k] - drift) & (lo[:, k] <= p_hi[k] + drift)
-            candidates = closed[near]
-            crossings = torch.zeros(len(p), dtype=torch.int64)
-            for j in range(0, len(candidates), tri_chunk):
-                crossings += _crossings(p, candidates[j:j + tri_chunk], direction)
-            votes[i:i + chunk] += crossings % 2
-    return votes >= 2
+def outer_skin(bodies: dict[str, Triangles]) -> dict[str, Triangles]:
+    """The outer skin of the union of `bodies` (each closed), split back into the faces of each body.
 
-
-def hidden_faces(this: Triangles, other: Triangles, flush_tol: float) -> torch.Tensor:
-    """Mask of `this` body's faces that are flush against, or buried inside, the closed body `other`."""
-    hidden = torch.zeros(len(this), dtype=torch.bool)
-    margin = 10 * flush_tol
-    corners = other.reshape(-1, 3)
-    lo, hi = corners.min(dim=0).values - margin, corners.max(dim=0).values + margin
-    centroids = this.mean(dim=1)
-    candidates = ((centroids >= lo) & (centroids <= hi)).all(dim=1).nonzero().flatten()
-    if len(candidates) == 0:
-        return hidden
-
-    c, n = centroids[candidates], facet_normals(this[candidates])
-    # Flush: facing a face of `other` closer than flush_tol (only `other`'s faces near the candidates matter).
-    c_lo, c_hi = c.min(dim=0).values - margin, c.max(dim=0).values + margin
-    other_centroids = other.mean(dim=1)
-    other_near = other[((other_centroids >= c_lo) & (other_centroids <= c_hi)).all(dim=1)]
-    if len(other_near):
-        flush = distance_to_facing(c, n, other_near, across_only=False) < flush_tol
-    else:
-        flush = torch.zeros(len(candidates), dtype=torch.bool)
-    # Buried: inside `other`. Test the rest only, since flush faces sit on its surface where the test is unclear.
-    buried = torch.zeros(len(candidates), dtype=torch.bool)
-    rest = ~flush
-    if rest.any():
-        buried[rest] = inside(c[rest], other)
-    hidden[candidates] = flush | buried
-    return hidden
-
-
-def outer_skin(bodies: dict[str, Triangles], flush_tol: float) -> dict[str, Triangles]:
-    """Each body's exposed faces only. `bodies` must each be closed; `flush_tol` is in the same units.
-
-    Every body is tested against every other closed body as originally given, so faces two bodies share
-    are removed from both.
+    Every body keeps its key, with the triangles of the union that lie on its surface (none if it is hidden
+    entirely). Where two bodies' faces coincide exactly, the union keeps one of them.
     """
-    skin: dict[str, Triangles] = {}
+    solids: list[manifold3d.Manifold] = []
+    name_of_id: dict[int, str] = {}
     for name, triangles in bodies.items():
-        hidden = torch.zeros(len(triangles), dtype=torch.bool)
-        for other_name, other in bodies.items():
-            if other_name != name:
-                hidden |= hidden_faces(triangles, other, flush_tol)
-        skin[name] = triangles[~hidden]
+        solid = _to_manifold(triangles, name)
+        name_of_id[solid.original_id()] = name
+        solids.append(solid)
+    union = manifold3d.Manifold.batch_boolean(solids, manifold3d.OpType.Add)
+    if union.status() != manifold3d.Error.NoError:
+        raise ValueError(f"union of the bodies failed: {union.status()}")
+
+    mesh = union.to_mesh64()
+    vertices = torch.from_numpy(np.asarray(mesh.vert_properties)[:, :3].copy())
+    faces = torch.from_numpy(np.asarray(mesh.tri_verts).astype(np.int64))
+
+    # Triangles come grouped in runs, one per source body: run k is triangles run_index[k] / 3 up to
+    # run_index[k + 1] / 3, from the body whose original id is run_original_id[k].
+    run_start = torch.from_numpy(np.asarray(mesh.run_index).astype(np.int64)) // 3
+    run_id = np.asarray(mesh.run_original_id)
+    body_of_face = torch.repeat_interleave(torch.arange(len(run_id)), run_start[1:] - run_start[:-1])
+
+    # Where faces of two bodies coincide (flush flat faces), the union also produces tiny pieces enclosing
+    # no volume, and closed pockets between bodies become separate pieces too. Neither is part of the
+    # aircraft's outer surface, so keep only the largest piece.
+    keep = _largest_piece(vertices, faces)
+    faces, body_of_face = faces[keep], body_of_face[keep]
+
+    skin = {name: torch.zeros((0, 3, 3), dtype=torch.float64) for name in bodies}
+    for k, original_id in enumerate(run_id):
+        name = name_of_id[int(original_id)]
+        skin[name] = torch.cat([skin[name], vertices[faces[body_of_face == k]]])
     return skin
+
+
+def _largest_piece(vertices: torch.Tensor, faces: torch.Tensor) -> torch.Tensor:
+    """Mask of the faces in the connected piece of the surface that encloses the largest volume.
+
+    Pieces are found by label propagation: every vertex starts with its own number, then repeatedly takes
+    the smallest number among the triangles it belongs to, until nothing changes. Each piece ends up
+    labelled with its smallest vertex number. (manifold3d's decompose() does the same but takes minutes
+    when there are thousands of pieces.)
+    """
+    labels = torch.arange(len(vertices))
+    while True:
+        face_min = labels[faces].min(dim=1).values
+        new = labels.scatter_reduce(0, faces.flatten(), face_min.repeat_interleave(3), reduce="amin")
+        new = new[new]  # pointer jumping: take the label of your label, which speeds up convergence
+        if torch.equal(new, labels):
+            break
+        labels = new
+    face_label = labels[faces[:, 0]]
+    # Signed volume of each piece, from the divergence theorem: sum over its triangles of a . (b x c) / 6.
+    a, b, c = (vertices[faces[:, i]] for i in range(3))
+    face_volume = (a * torch.linalg.cross(b, c)).sum(dim=1) / 6
+    piece_volume = torch.zeros(len(vertices), dtype=torch.float64).index_add_(0, face_label, face_volume)
+    return face_label == piece_volume.argmax()
+
+
+def narrow_gap_faces(skin: dict[str, Triangles], min_gap: float) -> dict[str, Triangles]:
+    """Faces of the skin that look out across a gap narrower than `min_gap` onto another part of the skin.
+
+    These are the walls of slits and slivers too thin to mesh, which snappyHexMesh would refine around. A ray
+    is cast from the centre of each face along its outward normal; the face is reported if it hits the skin
+    again within `min_gap`.
+    """
+    # Work in units of min_gap: manifold3d's ray cast has fixed tolerances, so the same check in metres and
+    # in millimetres would otherwise give different answers.
+    triangles = torch.cat(list(skin.values())) / min_gap
+    vertices, faces = weld(triangles)
+    solid = manifold3d.Manifold(
+        manifold3d.Mesh64(vert_properties=vertices.numpy(), tri_verts=faces.numpy().astype(np.uint32))
+    )
+    centres = triangles.mean(dim=1)
+    normals = facet_normals(triangles)
+    start = (centres + 1e-6 * normals).tolist()  # just off the face, so it doesn't hit itself
+    end = (centres + normals).tolist()
+    narrow = torch.tensor([bool(solid.ray_cast(s, e)) for s, e in zip(start, end)], dtype=torch.bool)
+
+    found: dict[str, Triangles] = {}
+    first = 0
+    for name, body in skin.items():
+        hits = body[narrow[first:first + len(body)]]
+        if len(hits):
+            found[name] = hits
+        first += len(body)
+    return found
+
+
+def check_skin(skin: dict[str, Triangles], min_gap: float) -> tuple[list[str], dict[str, Triangles]]:
+    """Problems with the skin that would spoil the mesh, as messages (empty if none), and the narrow-gap faces.
+
+    Checks that the skin is closed (snappyHexMesh would mesh the inside of the aircraft through any hole) and
+    that no part of it faces another across a gap narrower than `min_gap` (see narrow_gap_faces). A body's
+    narrow-gap faces are only a problem if they add up to more than (10 min_gap)^2 (1 mm^2 for a 0.1 mm gap):
+    the union leaves a few tiny slivers along sharp creases and seams, far too small to affect the mesh.
+    """
+    problems: list[str] = []
+    open_edges = open_edge_count(torch.cat(list(skin.values())))
+    if open_edges:
+        problems.append(f"skin is not closed: {open_edges} open edges")
+
+    narrow = narrow_gap_faces(skin, min_gap)
+    for name, faces_found in narrow.items():
+        corners = faces_found.reshape(-1, 3)
+        area = float(torch.linalg.cross(faces_found[:, 1] - faces_found[:, 0],
+                                        faces_found[:, 2] - faces_found[:, 0]).norm(dim=1).sum() / 2)
+        if area <= (10 * min_gap) ** 2:
+            continue
+        lo = [round(x, 4) for x in corners.min(dim=0).values.tolist()]
+        hi = [round(x, 4) for x in corners.max(dim=0).values.tolist()]
+        problems.append(f"{name}: {len(faces_found)} faces ({area:.3g} area) face the skin across a gap "
+                        f"narrower than {min_gap:g}, within box {lo} to {hi}")
+    return problems, narrow
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description="Write the aircraft's outer skin as one STL and check it.")
+    parser.add_argument("geometry", type=Path, help="path to geometry.toml")
+    parser.add_argument("out_file", type=Path, help="STL file to write (a named solid per body)")
+    parser.add_argument("-d", "--deflect", nargs="*", default=[], metavar="NAME=DEG",
+                        help="control surface deflections in degrees; unlisted surfaces stay at 0")
+    parser.add_argument("--cad-units", action="store_true",
+                        help="write in the model's units (e.g. mm) instead of metres, to overlay on the CAD model")
+    parser.add_argument("--min-gap", type=float, default=0.1,
+                        help="report gaps narrower than this, in mm (default 0.1)")
+    args = parser.parse_args(argv)
+
+    geometry = GeometryConfig.from_toml(args.geometry)
+    deflections = parse_deflections(args.deflect)
+    bodies = deflected_bodies(geometry, deflections, in_metres=not args.cad_units)
+    skin = outer_skin(bodies)
+    write_ascii_stl(args.out_file, skin)
+    print(f"wrote {args.out_file} with deflections {deflections or 'all zero'}")
+
+    min_gap = args.min_gap * 1e-3 / (geometry.scale_to_m if args.cad_units else 1.0)  # mm -> output units
+    problems, narrow = check_skin(skin, min_gap)
+    if problems and narrow:
+        narrow_file = args.out_file.with_name(args.out_file.stem + "_narrow_gaps.stl")
+        write_ascii_stl(narrow_file, narrow)
+        print(f"wrote the narrow-gap faces to {narrow_file}")
+    print("\n".join(["FAILED:"] + problems) if problems else "OK: skin is closed and has no narrow gaps")
+    if problems:
+        raise SystemExit(1)
+
+
+if __name__ == "__main__":
+    main()

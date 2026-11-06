@@ -5,7 +5,7 @@
 #     bash hpc/setup_python.sh
 # Re-run it to rebuild the environment, e.g. after a dependency changes.
 #
-# Creates <repo>/.venv-hpc with only what src/cfd needs (torch CPU build and pydantic), rather than the full
+# Creates <repo>/.venv-hpc with only what src/cfd needs (torch CPU build, pydantic and manifold3d), rather than the full
 # project environment, which includes Windows-only and GUI packages. It records which Python module it was
 # built with in .venv-hpc/python_module, so the Slurm jobs load the same one.
 
@@ -35,8 +35,8 @@ source "${venv}/bin/activate"
 pip install --upgrade pip
 pip install torch --index-url https://download.pytorch.org/whl/cpu
 pip install "pydantic>=2.13"
-pip install numpy   # not used by src/cfd, but torch warns on import without it
+pip install numpy manifold3d   # manifold3d: boolean union of the bodies (src/cfd/skin.py)
 echo "${python_module}" > "${venv}/python_module"
 
-python -c "import torch, pydantic; print(f'torch {torch.__version__}, pydantic {pydantic.__version__}: OK')"
+python -c "import torch, pydantic, manifold3d; print(f'torch {torch.__version__}, pydantic {pydantic.__version__}: OK')"
 echo "Environment ready: ${venv}"

@@ -3,13 +3,12 @@
 Pipeline for a case, given a deflection angle for some or all control surfaces:
     1. Load every body's STL (as exported from SolidWorks at zero deflection) and fill any small holes.
     2. Rotate each control surface about its hinge axis by its deflection (unlisted surfaces stay at 0).
-    3. Convert to metres and write one STL file containing every body as its own named solid.
+    3. Convert to metres.
 
-Each body stays a separate solid, so it becomes its own patch in the OpenFOAM mesh, and forces and hinge
-moments can be read off per control surface. Bodies are not merged into one surface: where a deflected
-surface overlaps a fixed one, snappyHexMesh simply keeps the fluid outside both.
+The bodies are then merged into the aircraft's outer skin for meshing (skin.py), keeping one patch per body
+so that forces and hinge moments can be read off per control surface.
 
-Run as a script to write the geometry and inspect it in a viewer, e.g.:
+Run as a script to write the separate (unmerged) bodies and inspect them in a viewer, e.g.:
     uv run python -m src.cfd.deflect cad/uav/geometry.toml out/aircraft.stl -d wingtip_r=10 wingtip_l=10 --cad-units
 """
 
@@ -80,11 +79,6 @@ def deflected_bodies(
     return {name: triangles * scale for name, triangles in bodies.items()}
 
 
-def write_case_geometry(geometry: GeometryConfig, deflections_deg: dict[str, float], path: Path) -> None:
-    """Write the whole aircraft, in metres, as one STL file with a named solid per body."""
-    write_ascii_stl(path, deflected_bodies(geometry, deflections_deg))
-
-
 def parse_deflections(items: list[str]) -> dict[str, float]:
     """Turn command-line items like ["wingtip_r=10", "wingtip_l=-5"] into {"wingtip_r": 10.0, ...}."""
     deflections: dict[str, float] = {}
@@ -106,16 +100,11 @@ def main(argv: list[str] | None = None) -> None:
                         help="control surface deflections in degrees; unlisted surfaces stay at 0")
     parser.add_argument("--cad-units", action="store_true",
                         help="write in the model's units (e.g. mm) instead of metres, to overlay on the CAD model")
-    parser.add_argument("--outer-skin", type=float, metavar="FLUSH_TOL",
-                        help="write only the exposed skin, as meshed (see skin.py); FLUSH_TOL in the output's units")
     args = parser.parse_args(argv)
 
     deflections = parse_deflections(args.deflect)
     geometry = GeometryConfig.from_toml(args.geometry)
     bodies = deflected_bodies(geometry, deflections, in_metres=not args.cad_units)
-    if args.outer_skin is not None:
-        from src.cfd.skin import outer_skin  # imported here to avoid a cycle: skin -> geometry_check -> deflect
-        bodies = outer_skin(bodies, args.outer_skin)
     write_ascii_stl(args.out_file, bodies)
     print(f"wrote {args.out_file} with deflections {deflections or 'all zero'}")
 

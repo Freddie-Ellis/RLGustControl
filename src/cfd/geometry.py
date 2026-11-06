@@ -135,10 +135,6 @@ class GeometryConfig(StrictModel):
     def stl_path(self, body: Body) -> Path:
         return self.root / body.stl
 
-    def missing_stls(self) -> list[Path]:
-        """STL files named in the config that don't exist on disk."""
-        return [p for p in (self.stl_path(b) for b in self.bodies) if not p.is_file()]
-
     def control_surface(self, name: str) -> ControlSurface:
         for surface in self.control_surfaces:
             if surface.name == name:

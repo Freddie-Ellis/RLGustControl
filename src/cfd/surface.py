@@ -23,14 +23,14 @@ from src.cfd.stl import Triangles
 WELD_DECIMALS = 9
 
 
-def _weld(triangles: Triangles) -> tuple[torch.Tensor, torch.Tensor]:
+def weld(triangles: Triangles) -> tuple[torch.Tensor, torch.Tensor]:
     """Convert to an indexed mesh: `vertices` (m, 3) unique points and `faces` (n, 3) vertex numbers."""
     corners = triangles.reshape(-1, 3).round(decimals=WELD_DECIMALS)
     vertices, vertex_of_corner = torch.unique(corners, dim=0, return_inverse=True)
     return vertices, vertex_of_corner.view(-1, 3)
 
 
-def _directed_edges(faces: torch.Tensor) -> torch.Tensor:
+def directed_edges(faces: torch.Tensor) -> torch.Tensor:
     """Every triangle side as a (from, to) vertex pair, in the triangle's own corner order: shape (3n, 2).
 
     On a consistently oriented closed surface, two triangles sharing an edge traverse it in opposite directions.
@@ -39,11 +39,15 @@ def _directed_edges(faces: torch.Tensor) -> torch.Tensor:
 
 
 def open_edge_count(triangles: Triangles) -> int:
-    """Number of edges not shared by exactly two triangles. 0 means the surface is closed."""
-    _, faces = _weld(triangles)
-    undirected = _directed_edges(faces).sort(dim=1).values  # (a, b) and (b, a) become the same edge
+    """Number of edges on the rim of a hole: used by an odd number of triangles. 0 means the surface is closed.
+
+    An edge used by four triangles is not a hole: it is where two parts of a closed surface touch along a
+    line, which the union of touching bodies (skin.py) can produce.
+    """
+    _, faces = weld(triangles)
+    undirected = directed_edges(faces).sort(dim=1).values  # (a, b) and (b, a) become the same edge
     _, uses = torch.unique(undirected, dim=0, return_counts=True)
-    return int((uses != 2).sum())
+    return int((uses % 2 == 1).sum())
 
 
 def close_surface(triangles: Triangles, max_hole_perimeter: float) -> Triangles:
@@ -53,8 +57,8 @@ def close_surface(triangles: Triangles, max_hole_perimeter: float) -> Triangles:
     stops a genuine opening (a missing face, say) from being silently covered over; set it to 0 to require
     every surface to be closed already.
     """
-    vertices, faces = _weld(triangles)
-    edges = _directed_edges(faces)
+    vertices, faces = weld(triangles)
+    edges = directed_edges(faces)
 
     # Count how many triangles use each edge, ignoring direction.
     _, edge_number, uses = torch.unique(edges.sort(dim=1).values, dim=0, return_inverse=True, return_counts=True)

@@ -82,6 +82,10 @@ class DistributedConfig(StrictModel):
     """
     publish_every: int = 250  # SAC updates between published weight versions
     eval_every: int = 10  # every k-th actor episode runs the deterministic policy (no exploration)
+    log_every: int = 50  # SAC updates per row of their metrics (losses, alpha, ...: the mean over those updates)
+    # Seconds between the tunnel PC's checks of the HPC copy (learner on the HPC). Each check is an SSH connection.
+    # Longer = gentler on the login node, but episodes reach the learner and weights reach the actor later.
+    sync_poll_s: float = 5.0
 
 
 # ----- run -----

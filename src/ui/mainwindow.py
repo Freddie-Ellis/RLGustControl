@@ -4,7 +4,7 @@ from pathlib import Path
 from qtpy.QtGui import QCloseEvent, QShortcut
 from qtpy.QtWidgets import QMainWindow, QTabWidget
 
-from src.ui.tabs.data_tab import DataTab
+from src.ui.tabs.compare_tab import CompareTab
 from src.ui.tabs.rollout_tab import RolloutTab
 from src.ui.tabs.runs_tab import RunsTab
 from src.ui.tabs.session_tab import SessionTab
@@ -21,7 +21,7 @@ class MainWindow(QMainWindow):
         self.rollout = RolloutTab()
         self.train = TrainTab()
         self.session = SessionTab()
-        self.data = DataTab()
+        self.compare = CompareTab()
         self.profiler = cProfile.Profile()
 
         self.profile_shortcut = QShortcut("Ctrl+Shift+P", self)
@@ -32,12 +32,12 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.rollout, "Rollout")
         self.tabs.addTab(self.train, "Train")
         self.tabs.addTab(self.session, "SAC Session")
-        self.tabs.addTab(self.data, "Data")
+        self.tabs.addTab(self.compare, "Compare")
         self.setCentralWidget(self.tabs)
 
         self.runs.replay_requested.connect(self._replay)
         self.runs.template_requested.connect(self._use_as_template)
-        self.train.run_started.connect(lambda _: self.runs.refresh())
+        self.train.run_started.connect(lambda _: (self.runs.refresh(), self.compare.refresh()))
         self.train.run_finished.connect(self._on_run_finished)
 
     def _replay(self, path: Path) -> None:
@@ -53,6 +53,7 @@ class MainWindow(QMainWindow):
     def _on_run_finished(self, _path: Path) -> None:
         self.runs.refresh()
         self.rollout.refresh_runs()
+        self.compare.refresh()
 
     def closeEvent(self, event: QCloseEvent) -> None:
         if not self.session.shutdown():

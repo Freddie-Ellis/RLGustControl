@@ -116,8 +116,10 @@ class RunDir:
         if not self.metrics_path.exists():
             return pl.DataFrame()
         try:
-            return pl.read_csv(self.metrics_path)
-        except (pl.exceptions.ComputeError, pl.exceptions.NoDataError):
+            # Every metric is a number. Read as text then cast, rather than let Polars guess from the first rows: a
+            # column that starts with `nan` (losses before the first update) would otherwise come back as strings.
+            return pl.read_csv(self.metrics_path, infer_schema=False).with_columns(pl.all().cast(pl.Float64))
+        except (pl.exceptions.ComputeError, pl.exceptions.NoDataError, pl.exceptions.InvalidOperationError):
             return pl.DataFrame()  # file caught mid-write by a running training process
 
     def request_stop(self) -> None:

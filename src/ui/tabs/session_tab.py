@@ -258,7 +258,7 @@ class SessionTab(QWidget):
         """Mirror the session's folder with its HPC copy, with sync.py's settings, until the session ends."""
         shared = self._shared_for(self.sync_console)  # a stale STOP here would be sent up and stop the HPC learner
         if shared is not None:
-            self.sync_console.run(sync.run_sync, shared.name, host=sync.HOST, poll_s=sync.POLL_S, cwd=str(ROOT))
+            self.sync_console.run(sync.run_sync, shared.name, host=sync.HOST, cwd=str(ROOT))
 
     def _profile_path(self, name: str) -> Path | None:
         if not self.profile.isChecked():

@@ -48,18 +48,19 @@ from src.ml.distributed.files import (
     learner_run_path,
     local_shared,
     outbox_dir,
+    read_config,
     stop_path,
     tmp_path,
     weights_dir,
     weights_version,
 )
+from src.ml.run_config import DistributedConfig
 from src.ml.runs import RunDir
 
 # ----- settings for running this file directly -----
 HOST = "iridis"  # an alias in ~/.ssh/config (HostName = a login node you may use, User, IdentityFile)
 
 SFTP = "sftp"  # C:\Windows\System32\OpenSSH\sftp.exe on the tunnel PC
-POLL_S = 5.0  # seconds between passes; each pass opens a new SSH connection, so don't hammer the login node
 CONNECT_TIMEOUT_S = 15
 LIST_TIMEOUT_S = 60.0
 TRANSFER_TIMEOUT_S = 600.0  # a whole pass, generous for a backlog of episodes after the link was down
@@ -244,9 +245,17 @@ class Sync:
             return False
         return self.learner_finished() or time.monotonic() - stop_seen > STOP_LINGER_S
 
-    def run(self, poll_s: float = POLL_S) -> None:
+    def poll_s(self) -> float:
+        """Seconds between passes: the session config's `distributed.sync_poll_s`, or its default until the learner
+        has written config.json (the sync starts before it does)."""
+        try:
+            return read_config(self.local).distributed.sync_poll_s
+        except (OSError, ValueError):
+            return DistributedConfig().sync_poll_s
+
+    def run(self, poll_s: float | None = None) -> None:
         """Pass after pass until the session is over (see `session_over`) or Ctrl+C. A failed pass is reported and
-        retried; the actor keeps running regardless."""
+        retried; the actor keeps running regardless. `poll_s` overrides the config's interval (for tests)."""
         print(f"syncing {self.local} <-> {self.host}:{self.remote}", flush=True)
         last = ""
         stop_seen: float | None = None
@@ -268,14 +277,14 @@ class Sync:
                     print(f"{time.strftime('%H:%M:%S')} STOP on both sides and nothing left to send: sync done", flush=True)
                     return
             last = message
-            time.sleep(poll_s)
+            time.sleep(poll_s if poll_s is not None else self.poll_s())
 
 
-def run_sync(session: str, host: str = HOST, poll_s: float = POLL_S) -> None:
-    """Mirror the session's local folder with its HPC folder until the session is over. Top level, so the UI can run
-    it in a process."""
+def run_sync(session: str, host: str = HOST) -> None:
+    """Mirror the session's local folder with its HPC folder until the session is over, checking as often as the
+    session's config says. Top level, so the UI can run it in a process."""
     try:
-        Sync(local_shared(session), host, hpc_shared(session)).run(poll_s)
+        Sync(local_shared(session), host, hpc_shared(session)).run()
     except KeyboardInterrupt:
         print("sync stopped", flush=True)
 

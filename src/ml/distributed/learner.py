@@ -51,7 +51,7 @@ from src.ml.run_config import RunConfig, SACConfig
 from src.ml.runs import RunDir, make_env, make_policy
 
 UPDATE_CHUNK = 50  # updates between checks for new episodes / STOP
-LOG_EVERY = 50  # updates per metrics row (the Session tab plots these), independent of publishing
+UPDATE_METRICS = ("critic_loss", "actor_loss", "alpha", "entropy", "q_mean")  # what SAC.update reports
 IDLE_SLEEP_S = 0.2  # wait when there is no data and no update budget
 
 
@@ -91,10 +91,19 @@ class Learner:
         self.env_steps = 0  # control steps received (each gives n_envs transitions); earns update budget
         self.transitions = 0  # rows received; warmup is counted in these, as in SAC.train
         self._since_log: dict[str, list[float]] = {}  # metrics accumulated since the last log row
+        # Data the run's metrics already cover: a resumed session's run directory has rows up to here, so re-reading
+        # its outbox on start only logs what came after (see ingest).
+        logged = run.read_metrics()
+        has_rows = "env_steps" in logged.columns and logged.height > 0
+        self.logged_env_steps = int(logged["env_steps"].to_numpy().max()) if has_rows else 0
 
     # ----- data -----
-    def ingest(self, parquets: list[Path]) -> int:
-        """Add episodes to the replay buffer. Returns how many new env steps arrived."""
+    def ingest(self, parquets: list[Path], backfill: bool = False) -> int:
+        """Add episodes to the replay buffer. Returns how many new env steps arrived.
+
+        Every episode gets a metrics row of its own (its return, never averaged with others), unless the run's metrics
+        already have it: a resumed session re-reads its whole outbox on start. `backfill` = data that was there before
+        this learner started, whose staleness means nothing now."""
         new_steps = 0
         for path in parquets:
             meta, frame = read_episode(path)
@@ -103,19 +112,28 @@ class Learner:
             self.buffer.add(tr["obs"], priv, tr["act"], tr["rew"], tr["next_obs"], next_priv, tr["done"])
             self.seen.add(path.name)
             new_steps += meta.n_steps
+            self.env_steps += meta.n_steps
             self.transitions += frame.height
 
+            if self.env_steps <= self.logged_env_steps:
+                continue  # already in the metrics
             ret = float(tr["rew"].sum()) / meta.n_envs
-            self._note("eval_return" if meta.evaluate else "train_return", ret)
-            if meta.policy_version >= 0:
-                self._note("staleness", float(self.version - meta.policy_version))  # versions behind when ingested
-        self.env_steps += new_steps
+            stale = meta.policy_version >= 0 and not backfill  # versions behind when ingested; old data: meaningless
+            self._write_row({
+                "eval_return" if meta.evaluate else "train_return": ret,
+                "staleness": float(self.version - meta.policy_version) if stale else math.nan,
+            })
+            self.logged_env_steps = self.env_steps
         return new_steps
 
     # ----- learning -----
+    def in_warmup(self) -> bool:
+        """Still collecting the warmup data: no SAC updates yet."""
+        return self.transitions < self.algo_cfg.warmup_transitions or len(self.buffer) < self.algo_cfg.batch_size
+
     def update_budget(self) -> int:
         """Updates still allowed for the data received so far (zero until the warmup data is in)."""
-        if self.transitions < self.algo_cfg.warmup_transitions or len(self.buffer) < self.algo_cfg.batch_size:
+        if self.in_warmup():
             return 0
         return self.algo_cfg.updates_per_step * self.env_steps - self.updates
 
@@ -126,8 +144,8 @@ class Learner:
             self.updates += 1
             if self.updates % self.cfg.distributed.publish_every == 0:
                 self.publish()
-            if self.updates % LOG_EVERY == 0:
-                self.log()
+            if self.updates % self.cfg.distributed.log_every == 0:
+                self.log_updates()
 
     def publish(self) -> None:
         """New weights for the actor, which picks them up before its next episode."""
@@ -143,30 +161,32 @@ class Learner:
     def _note(self, key: str, value: float) -> None:
         self._since_log.setdefault(key, []).append(value)
 
-    def log(self) -> None:
-        """One row per LOG_EVERY updates, keyed by update count. Columns are fixed (NaN when nothing arrived, e.g.
-        returns between episodes) so the CSV stays valid."""
-        def mean(key: str) -> float:
-            vals = self._since_log.get(key, [])
-            return sum(vals) / len(vals) if vals else float("nan")
+    def log_updates(self) -> None:
+        """A row of SAC's own metrics: the mean over the `log_every` updates since the last one (one row per update
+        would be millions of rows). Returns are in the episode rows, not here."""
+        means = {k: sum(v) / len(v) for k, v in self._since_log.items() if v}
+        self._write_row({k: means.get(k, math.nan) for k in UPDATE_METRICS})
+        self._since_log = {}
 
+    def _write_row(self, values: dict[str, float]) -> None:
+        """One metrics row, keyed by update count. There are two kinds: an episode row (its return) and an update row
+        (SAC's metrics); each leaves the other kind's columns NaN. Columns are fixed so the CSV stays valid."""
         row = {
-            "train_return": mean("train_return"),
-            "eval_return": mean("eval_return"),
+            "train_return": math.nan,
+            "eval_return": math.nan,
             "version": float(self.version),
             "env_steps": float(self.env_steps),
             "updates": float(self.updates),
-            "staleness": mean("staleness"),
-            **{k: mean(k) for k in ("critic_loss", "actor_loss", "alpha", "entropy", "q_mean")},
-        }
+            "staleness": math.nan,
+            **{k: math.nan for k in UPDATE_METRICS},
+        } | values
         self.run_dir.append_metrics(self.updates, row)
         latest_return = row["train_return"] if math.isnan(row["eval_return"]) else row["eval_return"]
-        if not math.isnan(latest_return):  # most rows fall between episodes; keep the last real return
+        if not math.isnan(latest_return):  # an episode row: keep the run's status up to date
             status = self.run_dir.read_status()
             status.iterations_done = self.version
             status.final_return = latest_return
             self.run_dir.write_status(status)
-        self._since_log = {}
 
     # ----- main loop -----
     def stop_requested(self) -> bool:
@@ -231,8 +251,10 @@ def run_learner(
     atomic_write_text(learner_run_path(shared), str(run.path))  # lets the Session tab find the learner's metrics
     learner = Learner(config, shared, run)
     for folder in seed_from or []:
-        n = learner.ingest(sorted(folder.glob("ep_*.parquet")))
+        n = learner.ingest(sorted(folder.glob("ep_*.parquet")), backfill=True)
         print(f"seeded {n} env steps from {folder}", flush=True)
+    if n := learner.ingest(new_episodes(shared, learner.seen), backfill=True):  # a session carried on: its data so far
+        print(f"read {n} env steps already in the outbox", flush=True)
 
     state, error = "done", None
     try:

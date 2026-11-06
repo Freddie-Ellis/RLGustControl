@@ -161,7 +161,7 @@ class RunsTab(QWidget):
             return
         self.plot.setLabel("left", metric)
         for i, s in enumerate(self._selected()):
-            c = compare.curve(s.run.read_metrics(), metric, s.config.algo.updates_per_step)  # every value logged
+            c = compare.curve(s.run.read_metrics(), metric)  # every value logged, where it happened
             if c is not None:
                 pen = series_pen(i)
                 self.plot.plot(c.x, c.y, pen=pen, symbol="o", symbolSize=4, symbolPen=None, symbolBrush=pen.color(),

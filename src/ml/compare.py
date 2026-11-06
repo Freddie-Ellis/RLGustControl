@@ -20,7 +20,6 @@ from src.ml.runs import RunSummary
 
 X_LABEL = "transitions"  # data collected so far: one per control step, over all parallel envs
 X_COLUMNS = ("transitions", "env_steps")  # the column that gives it: train.py logs the first, the learner the second
-EPISODE_METRICS = ("train_return", "eval_return", "staleness")  # one value per episode; the rest come from updates
 DEFAULT_METRICS = ("train_return", "eval_return", "critic_loss")
 _NOT_METRICS = {"iteration", *X_COLUMNS}
 
@@ -52,29 +51,51 @@ def x_column(metrics: pl.DataFrame) -> str | None:
     return next((c for c in X_COLUMNS if c in metrics.columns), None)
 
 
-def curve(metrics: pl.DataFrame, metric: str, updates_per_step: int | None = None) -> Curve | None:
-    """`metric` against transitions, every row that has a value for it. Rows without one are the other kind of row,
-    not lost data: e.g. eval_return is empty on train episodes, losses are empty on episode rows (and before the
-    first update). None if the run has no such metric, or no transitions column.
-
-    Episode metrics sit at the data collected when the episode came in. SAC's own metrics (losses, alpha, ...) of a
-    run that logs `updates` sit at updates / `updates_per_step`: the data those updates were earned by. A learner
-    often does many logged updates before the next episode arrives; at the data collected they would all stack at
-    one x, while this keeps them in order, in the same unit."""
+def curve(metrics: pl.DataFrame, metric: str) -> Curve | None:
+    """`metric` against transitions, every row that has a value for it, where it happened in the run. Rows without
+    a value are the other kind of row, not lost data: e.g. eval_return is empty on train episodes, losses on episode
+    rows and before the first update. None if the run has no such metric, or no transitions column."""
     x_col = x_column(metrics)
     if x_col is None or metric not in metrics.columns:
         return None
-    x = pl.col(x_col).cast(pl.Float64)
-    if metric not in EPISODE_METRICS and updates_per_step and "updates" in metrics.columns:
-        x = pl.col("updates").cast(pl.Float64) / updates_per_step
-    points = (
-        metrics.select(x.alias("x"), pl.col(metric).cast(pl.Float64).alias("y"))
-        .filter(pl.col("x").is_finite() & pl.col("y").is_finite())
-        .sort("x", maintain_order=True)
-    )
-    if points.is_empty():
+    x = _spread_within_episodes(metrics[x_col].cast(pl.Float64).to_numpy())
+    y = metrics[metric].cast(pl.Float64).to_numpy()
+    keep = np.isfinite(x) & np.isfinite(y)
+    if not keep.any():
         return None
-    return Curve(points["x"].to_numpy(), points["y"].to_numpy())
+    order = np.argsort(x[keep], kind="stable")
+    return Curve(x[keep][order], y[keep][order])
+
+
+def _spread_within_episodes(x: np.ndarray) -> np.ndarray:
+    """Rows logged at the same data collected, in logged order, spread evenly up to the next episode's data.
+
+    A row's transitions is the data collected when it was logged. An episode row is the first at its value (the
+    data grows when the episode comes in); the rows after it at the same value (SAC's metrics, every log_every
+    updates) were logged while the learner worked through that data, before the next episode came in. So they
+    happened between this value and the next: spread across that gap, in order, they show the run as it went,
+    and never move into the wrong gap (no updates during warmup, say). After the last episode, the gap is the
+    typical one between episodes. Rows alone at their value (every train.py row) are unchanged."""
+    out = x.copy()
+    finite = np.isfinite(x)
+    values = np.unique(x[finite])
+    if values.size == 0:
+        return out
+    typical_gap = float(np.median(np.diff(values))) if values.size > 1 else 1.0
+    rows = np.flatnonzero(finite)
+    start = 0
+    while start < rows.size:
+        end = start
+        while end + 1 < rows.size and x[rows[end + 1]] == x[rows[start]]:
+            end += 1
+        if end > start:
+            here = x[rows[start]]
+            k = int(np.searchsorted(values, here, side="right"))
+            gap = (values[k] - here) if k < values.size else typical_gap
+            n = end - start + 1
+            out[rows[start:end + 1]] = here + gap * np.arange(n) / n
+        start = end + 1
+    return out
 
 
 # ----- summary -----

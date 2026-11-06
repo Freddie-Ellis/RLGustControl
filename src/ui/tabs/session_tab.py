@@ -535,8 +535,7 @@ class SessionTab(QWidget):
             self.learner_metric.setCurrentText(current if current in columns else columns[0])
             self.learner_metric.blockSignals(False)
         metric = self.learner_metric.currentText()
-        ups = self.reader.cfg.algo.updates_per_step if self.reader.cfg else None
-        c = compare.curve(df, metric, ups)  # every logged value, against transitions
+        c = compare.curve(df, metric)  # every logged value, where it happened in the run
         self.learn_curve.setData(c.x if c else [], c.y if c else [])
         self.p_learn.setLabel("left", metric)
 

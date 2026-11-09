@@ -82,7 +82,8 @@ class ControlSurface(Body):
 class Reference(StrictModel):
     """Reference values used to turn forces and moments into coefficients (C_L, C_m, ...)."""
     point: Vec3                  # moment reference point, e.g. the centre of gravity
-    length: float = Field(gt=0)  # reference length, e.g. the mean aerodynamic chord
+    length: float = Field(gt=0)  # reference length for pitching moments, e.g. the mean aerodynamic chord
+    span: float = Field(gt=0)    # reference length for rolling and yawing moments: the wing span
     area: float = Field(gt=0)    # reference area, e.g. the wing planform area, in units^2
 
 

@@ -1,97 +1,46 @@
 #!/bin/bash
 # Mesh one case on Iridis 6, check the mesh, and write small extracts to download.
 #
+# Submitted by hpc/submit_cases.sh (see src/cfd/submit.py), from the repository root, with this job's output in
+# the case's folder:
+#     bash hpc/submit_cases.sh configs/cases/uav_clean.toml
 # The only argument is a case file (see configs/cases/), which names the geometry, the mesh settings and the
-# control surface deflections:
-#     sbatch hpc/mesh_case.slurm configs/cases/uav_wingtip_10.toml
-# Many cases at once: pass a folder of case files as an array job, one task per file (sorted by name).
-# hpc/submit_cases.sh works out the array size for you:
-#     bash hpc/submit_cases.sh configs/cases/sweep_01
-# One-off setup first:   bash hpc/setup_python.sh   (on the login node)
+# control surface deflections. One-off setup first: bash hpc/setup_python.sh (on the login node).
 #
-# Output log:     mesh_<jobid>.out (in the submit directory)
-# Case directory: <repo>/hpc/runs/<case name>_<jobid>/
-#   mesh_report.json         cell counts, quality metrics, layer coverage, pass/fail
-#   case.toml                copy of the case file
-#   log.*                    one log per step
-#   postProcessing/meshSlices/   cutting planes and wall surfaces (VTK) with quality fields: download these
-#   postProcessing/checkMesh/    VTK surfaces of any faces checkMesh flags as bad
+# Everything for a case goes in hpc/runs/<case name>/ (the case file's name); this job writes mesh/:
+#   slurm_<jobid>.out          the job's output (this log)
+#   log.*                      one log per step
+#   mesh_case.json             every setting used, the job id and when the case was written
+#   mesh_report.json           cell counts, quality metrics, layer coverage, pass/fail
+#   postProcessing/meshSlices/ cutting planes and wall surfaces (VTK) with quality fields: download these
+#   postProcessing/checkMesh/  VTK surfaces of any faces checkMesh flags as bad
 #
 # Steps: Python writes the case (aircraft skin STL, its feature edges, dictionaries) -> blockMesh
 #        -> decomposePar -> snappyHexMesh (MPI) -> reconstructParMesh -> checkMesh -> slices -> report.
 # The job fails (non-zero exit) if any step fails or the mesh does not meet the acceptance limits.
-# Resources below can be overridden at submission, e.g. sbatch --ntasks=64 --time=04:00:00 ...
 
 #SBATCH --job-name=mesh
 #SBATCH --nodes=1
 #SBATCH --ntasks=32
 #SBATCH --cpus-per-task=1
-#SBATCH --mem=48G   # the 1.3M-cell test mesh peaked at 10.7 GB; the 0.384 m base cell gives ~3-3.5M cells
+#SBATCH --mem=48G   # the ~3M-cell mesh peaked at 12.8 GB; the fine mesh-study mesh has about twice the cells
 #SBATCH --time=02:00:00
-#SBATCH --output=mesh_%j.out
-#SBATCH --error=mesh_%j.out
+#SBATCH --output=slurm_%x_%j.out   # replaced by submit_cases.sh with <case folder>/mesh/slurm_<jobid>.out
+#SBATCH --error=slurm_%x_%j.out
 
-OF_VERSION="v2506"
-
-module purge
-# OpenFOAM's bashrc treats any arguments it sees as extra settings files and sources them, and a sourced
-# file inherits this script's arguments, so hide the job's argument (the case file) while it loads.
-job_args=("$@")
-set --
-# OpenFOAM's bashrc references unset variables, so enable strict mode after sourcing it.
-source "/iridisfs/i6software/openfoam/${OF_VERSION}/OpenFOAM-${OF_VERSION}/etc/bashrc"
-set -- "${job_args[@]}"
 set -eo pipefail
+source "${SLURM_SUBMIT_DIR}/hpc/env.sh"   # Slurm runs a copy of this script, so find env.sh via the repo
+load_openfoam
+load_python
 
-# Resolve the repo root so the job works whichever directory it was submitted from.
-repo_root="$(git -C "${SLURM_SUBMIT_DIR}" rev-parse --show-toplevel 2>/dev/null || echo "${SLURM_SUBMIT_DIR}")"
-
-# Pick the case file: the argument itself, or this array task's file from a folder.
-target="${1:?usage: sbatch hpc/mesh_case.slurm <case file | folder of case files>}"
-target="$(cd "${SLURM_SUBMIT_DIR}" && realpath "${target}")"
-if [ -d "${target}" ]; then
-    mapfile -t case_files < <(find "${target}" -maxdepth 1 -name '*.toml' | sort)
-    if [ -z "${SLURM_ARRAY_TASK_ID:-}" ]; then
-        echo "A folder of case files must be submitted as an array job: bash hpc/submit_cases.sh ${1}"
-        exit 1
-    fi
-    case_file="${case_files[${SLURM_ARRAY_TASK_ID}]}"
-else
-    case_file="${target}"
-fi
+case_file="$(cd "${SLURM_SUBMIT_DIR}" && realpath "${1:?usage: bash hpc/submit_cases.sh <case file>}")"
 case_name="$(basename "${case_file}" .toml)"
-case_dir="${repo_root}/hpc/runs/${case_name}_${SLURM_JOB_ID}"
+case_dir="${repo_root}/hpc/runs/${case_name}/mesh"
+mkdir -p "${case_dir}"
 
-# Python environment created by hpc/setup_python.sh, with the same Python module it was built with.
-venv="${repo_root}/.venv-hpc"
-if [ ! -f "${venv}/python_module" ]; then
-    echo "No Python environment at ${venv}; run 'bash hpc/setup_python.sh' on the login node first."
-    exit 1
-fi
-module load "$(cat "${venv}/python_module")"
-source "${venv}/bin/activate"
-
-echo "=== Environment ==="
-echo "Job ID:        ${SLURM_JOB_ID} on ${SLURM_JOB_NODELIST} (${SLURM_NTASKS} tasks)"
-echo "OpenFOAM:      ${WM_PROJECT_VERSION:?OpenFOAM bashrc did not load}"
-echo "Python:        $(command -v python) ($(python --version 2>&1))"
-echo "Commit:        $(git -C "${repo_root}" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+print_environment
 echo "Case file:     ${case_file}"
 echo "Case dir:      ${case_dir}"
-
-# Run one step, logging to log.<name>; print the log tail and abort on failure.
-run_step() {
-    local name="$1"
-    shift
-    echo "--- ${name}"
-    local start=${SECONDS}
-    if ! "$@" > "log.${name}" 2>&1; then
-        echo "FAILED: ${name}"
-        tail -n 40 "log.${name}"
-        exit 1
-    fi
-    echo "    done in $(( SECONDS - start )) s"
-}
 
 echo
 echo "=== Case setup ==="

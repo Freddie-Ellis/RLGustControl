@@ -1,0 +1,21 @@
+# Mesh-independence study, fine mesh: no deflection, background cell 0.288 m (surface cells 1.1-0.56 mm, ~7M cells).
+# The three study meshes differ only in base_cell_size, so every cell size scales by 4/3 between them; each is
+# solved at the same flow conditions, and the coefficients are compared between meshes.
+# Submit all three in two steps: the meshes first, then (once a single test solve has worked) the solves,
+# which skips the finished meshes:
+#     bash hpc/submit_cases.sh configs/cases/mesh_study --mesh-only
+#     bash hpc/submit_cases.sh configs/cases/mesh_study --solve-time 08:00:00
+
+description = "Mesh study, fine: all control surfaces at 0 deg, base cell 0.288 m"
+geometry = "cad/uav/geometry.toml"
+mesh = "configs/mesh/uav.toml"
+solver = "configs/solver/uav_rans.toml"
+
+[deflections_deg]
+
+[mesh_overrides]
+base_cell_size = 0.288
+
+[flow]
+alpha_deg = [0.0, 10.0, 20.0, 30.0]
+beta_deg = [0.0, 5.0]

@@ -10,8 +10,8 @@ What is checked:
     - prism-layer coverage per wall from snappyHexMesh's final layer table (low coverage is a warning, since
       layers often collapse at sharp trailing edges without making the mesh unusable).
 
-Run by hand on a case directory:
-    python -m src.cfd.mesh_report hpc/runs/mesh_<jobid>
+Run by hand on a mesh folder:
+    python -m src.cfd.mesh_report hpc/runs/<case name>/mesh
 """
 
 import argparse

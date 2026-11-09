@@ -1,9 +1,9 @@
-# Case file: submit with   sbatch hpc/mesh_case.slurm configs/cases/uav_wingtip_10.toml
+# Case file: submit with   bash hpc/submit_cases.sh configs/cases/uav_wingtip_10.toml  (mesh only: no solver/[flow])
 # The file name (without .toml) is the case name. Paths are relative to the repo root.
 
 description = "First mesh test: both wingtips at +10 deg (trailing edge up), everything else at 0"
 geometry = "cad/uav/geometry.toml"
-mesh = "configs/mesh/uav_test.toml"
+mesh = "configs/mesh/uav.toml"
 
 # Control surface deflections in degrees; surfaces not listed stay at 0. Names and limits are in the geometry.
 [deflections_deg]

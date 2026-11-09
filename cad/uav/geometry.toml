@@ -27,11 +27,12 @@ max_hole_perimeter = 20.0
 [reference]
 point = [187.9, 0.0, 0.0]   # quarter-MAC (MAC leading edge at x = 106.1)
 length = 327.35             # mean aerodynamic chord
+span = 650.0                # wing span (wingtip to wingtip)
 area = 168899.0             # planform area (mm^2)
 
 [[fixed_bodies]]
 name = "main_body"
-stl = "MainBody^AeroGeom_Meshing1.STL"   # exported from the Parasolid-healed copy
+stl = "MainBody^AeroGeom_Meshing1.STL"   # coves filled so the flap noses are buried in it
 
 # All-moving wingtips, pivoting at about mid-chord. The root face (y = +/-275) sits on the main body's
 # side face and stays in that plane as the tip rotates, so no hinge gap opens. Positive = trailing edge up.

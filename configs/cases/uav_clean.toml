@@ -1,8 +1,14 @@
-# Case file: submit with   sbatch hpc/mesh_case.slurm configs/cases/uav_clean.toml
+# Case file: submit with   bash hpc/submit_cases.sh configs/cases/uav_clean.toml
 # The file name (without .toml) is the case name. Paths are relative to the repo root.
 
-description = "All control surfaces at 0 deg"
+description = "All control surfaces at 0 deg: alpha sweep"
 geometry = "cad/uav/geometry.toml"
-mesh = "configs/mesh/uav_test.toml"
+mesh = "configs/mesh/uav.toml"
+solver = "configs/solver/uav_rans.toml"
 
 [deflections_deg]
+
+# Solved at every combination of these angles (deg).
+[flow]
+alpha_deg = [0.0, 5.0, 10.0, 15.0, 20.0, 25.0, 30.0]
+beta_deg = [0.0]

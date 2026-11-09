@@ -1,7 +1,8 @@
 """Checking that a triangulated surface is closed, and filling small holes so that it is.
 
-A body's surface must be closed (watertight) to mesh it reliably. SolidWorks sometimes leaves thin slits where
-two faces meet at a shallow angle, such as where a loft blends into the wing, and these are filled here.
+A body's surface must be closed (watertight) to mesh it reliably. SolidWorks can leave thin slits where two
+faces meet at a shallow angle, such as where a loft blends into the wing. The current exports are closed, but
+small holes are still filled on load as a safety net, and a large one is reported rather than covered over.
 
 How the check works
 -------------------

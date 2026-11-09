@@ -1,25 +1,21 @@
-"""Deflect control surfaces about their hinges and write the geometry for one CFD case.
+"""Deflect control surfaces about their hinges, giving the aircraft's bodies for one CFD case.
 
-Pipeline for a case, given a deflection angle for some or all control surfaces:
+Given a deflection angle for some or all control surfaces:
     1. Load every body's STL (as exported from SolidWorks at zero deflection) and fill any small holes.
     2. Rotate each control surface about its hinge axis by its deflection (unlisted surfaces stay at 0).
     3. Convert to metres.
 
 The bodies are then merged into the aircraft's outer skin for meshing (skin.py), keeping one patch per body
-so that forces and hinge moments can be read off per control surface.
-
-Run as a script to write the separate (unmerged) bodies and inspect them in a viewer, e.g.:
-    uv run python -m src.cfd.deflect cad/uav/geometry.toml out/aircraft.stl -d wingtip_r=10 wingtip_l=10 --cad-units
+so that forces and hinge moments can be read off per control surface. To view a deflected aircraft, use
+`python -m src.cfd.skin` (see skin.py).
 """
 
-import argparse
 import math
-from pathlib import Path
 
 import torch
 
 from src.cfd.geometry import Body, GeometryConfig, HingeAxis
-from src.cfd.stl import Triangles, read_stl, write_ascii_stl
+from src.cfd.stl import Triangles, read_stl
 from src.cfd.surface import close_surface
 
 
@@ -88,26 +84,3 @@ def parse_deflections(items: list[str]) -> dict[str, float]:
             raise ValueError(f"expected NAME=DEG, got {item!r}")
         deflections[name] = float(value)
     return deflections
-
-
-def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(
-        description="Write the deflected aircraft as one STL file (a named solid per body), e.g. to view it.",
-    )
-    parser.add_argument("geometry", type=Path, help="path to geometry.toml")
-    parser.add_argument("out_file", type=Path, help="STL file to write")
-    parser.add_argument("-d", "--deflect", nargs="*", default=[], metavar="NAME=DEG",
-                        help="control surface deflections in degrees; unlisted surfaces stay at 0")
-    parser.add_argument("--cad-units", action="store_true",
-                        help="write in the model's units (e.g. mm) instead of metres, to overlay on the CAD model")
-    args = parser.parse_args(argv)
-
-    deflections = parse_deflections(args.deflect)
-    geometry = GeometryConfig.from_toml(args.geometry)
-    bodies = deflected_bodies(geometry, deflections, in_metres=not args.cad_units)
-    write_ascii_stl(args.out_file, bodies)
-    print(f"wrote {args.out_file} with deflections {deflections or 'all zero'}")
-
-
-if __name__ == "__main__":
-    main()

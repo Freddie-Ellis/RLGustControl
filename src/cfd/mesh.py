@@ -12,7 +12,8 @@
     system/meshSlices                  cutting planes + wall surfaces written as small VTK files to download
     system/controlDict, fvSchemes, fvSolution, decomposeParDict   required by the OpenFOAM utilities
     case.toml                          copy of the case file the case was built from
-    mesh_case.json                     inputs and settings, read back by mesh_report.py
+    mesh_case.json                     every setting used, the job id and when it was written; read back by
+                                       mesh_report.py
 
 How snappyHexMesh builds the mesh, and how the settings map onto it:
     1. Castellation: start from the background cells (size `base_cell_size`) and split them in half
@@ -26,21 +27,25 @@ see skin.py), so that faces hidden between bodies don't trigger refinement along
 first (closed, no slits narrower than skin_min_gap) and the case is not written if it fails.
 
 Run as a script (normally from the Slurm job), with a case file from configs/cases/:
-    python -m src.cfd.mesh configs/cases/uav_wingtip_10.toml <case_dir> --n-procs 32
+    python -m src.cfd.mesh configs/cases/uav_wingtip_10.toml hpc/runs/uav_wingtip_10/mesh --n-procs 32
 """
 
 import argparse
 import json
 import math
+import os
 import shutil
 import tomllib
+from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import torch
 from pydantic import Field
 
 from src.cfd.case import CaseSpec
 from src.cfd.deflect import deflected_bodies
+from src.cfd.foam import foam_vector, write_foam_file
 from src.cfd.geometry import GeometryConfig, StrictModel
 from src.cfd.skin import check_skin, outer_skin
 from src.cfd.stl import write_ascii_stl, write_obj_edges
@@ -66,11 +71,11 @@ class MeshSettings(StrictModel):
     lateral_lengths: float = Field(default=20.0, gt=0)  # to each side, above and below
 
     # Background cell size; refinement level n gives cells of base_cell_size / 2**n.
-    base_cell_size: float = Field(default=0.512, gt=0)
+    base_cell_size: float = Field(default=0.384, gt=0)
 
     # Surface refinement as (min, max) levels: min everywhere on the surface, max where it curves sharply
     # (by more than resolve_feature_angle between neighbouring cells, e.g. at leading edges).
-    fixed_body_level: tuple[int, int] = (7, 8)
+    fixed_body_level: tuple[int, int] = (8, 9)
     control_surface_level: tuple[int, int] = (8, 9)
     feature_level: int = 9                 # level along extracted sharp edges
     feature_included_angle: float = 150.0  # edges where the surface turns by more than 180 - this are features
@@ -78,11 +83,19 @@ class MeshSettings(StrictModel):
     n_cells_between_levels: int = 3        # buffer cells between refinement levels, for smooth size changes
 
     # Volume refinement boxes, levels as above. The near box surrounds the aircraft (padded by
-    # near_padding_lengths aircraft lengths); the wake box runs downstream from the trailing edge.
+    # near_padding_lengths aircraft lengths); the wake box runs wake_lengths aircraft lengths downstream from
+    # the trailing edge.
     near_level: int = 5
     near_padding_lengths: float = 0.3
     wake_level: int = 5
     wake_lengths: float = 2.0
+
+    # Range of flow angles (deg) the mesh must serve; one mesh is solved at every angle in it. The wake leaves
+    # along the freestream, so the wake box is widened until the wake stays inside it at every angle: upward
+    # for positive angle of attack, downward for negative, and to both sides for sideslip up to +-max_beta_deg.
+    min_alpha_deg: float = Field(default=-10.0, ge=-60, le=0)
+    max_alpha_deg: float = Field(default=30.0, ge=0, le=60)
+    max_beta_deg: float = Field(default=10.0, ge=0, le=60)
 
     # Prism layers on every wall. Thicknesses are relative to the local surface cell size.
     n_layers: int = 5
@@ -105,9 +118,11 @@ class MeshSettings(StrictModel):
     acceptance: MeshAcceptance = MeshAcceptance()
 
     @classmethod
-    def from_toml(cls, path: Path) -> MeshSettings:
+    def from_toml(cls, path: Path, overrides: dict[str, Any] | None = None) -> MeshSettings:
+        """Load settings from a TOML file, with any `overrides` (e.g. a case's [mesh_overrides]) replacing
+        the file's values. Overrides are checked like the file, so a misspelt name is an error."""
         with open(path, "rb") as f:
-            return cls.model_validate(tomllib.load(f))
+            return cls.model_validate({**tomllib.load(f), **(overrides or {})})
 
     def cell_size(self, level: int) -> float:
         return self.base_cell_size / 2**level
@@ -116,23 +131,6 @@ class MeshSettings(StrictModel):
 class Box(StrictModel):
     lo: Vec3
     hi: Vec3
-
-
-def _vec(v: Vec3 | list[float] | torch.Tensor) -> str:
-    """Format a point as an OpenFOAM vector, e.g. (0.1 0 -0.02)."""
-    values = v.tolist() if isinstance(v, torch.Tensor) else v
-    return "(" + " ".join(f"{x:.6g}" for x in values) + ")"
-
-
-def _foam_file(case_dir: Path, relative_path: str, body: str) -> None:
-    """Write an OpenFOAM dictionary with the standard FoamFile header."""
-    path = case_dir / relative_path
-    path.parent.mkdir(parents=True, exist_ok=True)
-    header = (
-        "FoamFile\n{\n    version     2.0;\n    format      ascii;\n    class       dictionary;\n"
-        f"    object      {path.name};\n}}\n\n"
-    )
-    path.write_text(header + body.strip() + "\n")
 
 
 def _domain(lo: torch.Tensor, hi: torch.Tensor, s: MeshSettings) -> tuple[Box, tuple[int, int, int]]:
@@ -211,20 +209,26 @@ def write_mesh_case(
     domain, (nx, ny, nz) = _domain(lo, hi, s)
     pad = s.near_padding_lengths * length
     near = Box(lo=tuple((lo - pad).tolist()), hi=tuple((hi + pad).tolist()))
+    # Over the wake box's length the wake drifts sideways by length * tan(angle): up at positive alpha
+    # (the freestream then comes from below the nose), down at negative alpha, sideways with sideslip.
+    reach = s.wake_lengths * length
+    rise = reach * math.tan(math.radians(s.max_alpha_deg))
+    fall = reach * math.tan(math.radians(-s.min_alpha_deg))
+    drift = reach * math.tan(math.radians(s.max_beta_deg))
     wake = Box(
-        lo=(float(hi[0]) - 0.1 * length, near.lo[1], near.lo[2]),
-        hi=(float(hi[0]) + s.wake_lengths * length, near.hi[1], near.hi[2]),
+        lo=(float(hi[0]) - 0.1 * length, near.lo[1] - drift, near.lo[2] - fall),
+        hi=(float(hi[0]) + reach, near.hi[1] + drift, near.hi[2] + rise),
     )
     location = _location_in_mesh(lo, hi, domain, s)
     fixed_names = [b.name for b in geometry.fixed_bodies]
     surface_names = [c.name for c in geometry.control_surfaces]
     wall_regex = "(" + "|".join(bodies) + ")"
 
-    # Background mesh: one block of uniform hex cells. Patches: inlet (upstream face), outlet (downstream
-    # face) and sides (the other four). Angle of attack and sideslip are set later through the inlet velocity,
-    # so the same mesh serves every flow direction.
+    # Background mesh: one block of uniform hex cells. All six faces form one far-field patch, "freestream":
+    # the solver's freestream conditions make each part of it an inlet or an outlet depending on whether the
+    # flow enters or leaves there, so the same mesh serves every angle of attack and sideslip.
     (x0, y0, z0), (x1, y1, z1) = domain.lo, domain.hi
-    _foam_file(case_dir, "system/blockMeshDict", f"""
+    write_foam_file(case_dir, "system/blockMeshDict", f"""
 scale 1;
 
 vertices
@@ -237,9 +241,7 @@ blocks ( hex (0 1 2 3 4 5 6 7) ({nx} {ny} {nz}) simpleGrading (1 1 1) );
 
 boundary
 (
-    inlet  {{ type patch; faces ((0 4 7 3)); }}
-    outlet {{ type patch; faces ((1 2 6 5)); }}
-    sides  {{ type patch; faces ((0 1 5 4) (3 7 6 2) (0 3 2 1) (4 5 6 7)); }}
+    freestream {{ type patch; faces ((0 4 7 3) (1 2 6 5) (0 1 5 4) (3 7 6 2) (0 3 2 1) (4 5 6 7)); }}
 );
 """)
 
@@ -255,7 +257,7 @@ boundary
         + [region_entry(n, s.control_surface_level) for n in surface_names]
     )
 
-    _foam_file(case_dir, "system/snappyHexMeshDict", f"""
+    write_foam_file(case_dir, "system/snappyHexMeshDict", f"""
 // Cell sizes: level 0 = {s.cell_size(0):.4g} m, near box (level {s.near_level}) = {s.cell_size(s.near_level) * 1e3:.3g} mm,
 // fixed bodies = {s.cell_size(s.fixed_body_level[0]) * 1e3:.3g}-{s.cell_size(s.fixed_body_level[1]) * 1e3:.3g} mm,
 // control surfaces = {s.cell_size(s.control_surface_level[0]) * 1e3:.3g}-{s.cell_size(s.control_surface_level[1]) * 1e3:.3g} mm,
@@ -276,8 +278,8 @@ geometry
 {region_names}
         }}
     }}
-    near_box {{ type searchableBox; min {_vec(near.lo)}; max {_vec(near.hi)}; }}
-    wake_box {{ type searchableBox; min {_vec(wake.lo)}; max {_vec(wake.hi)}; }}
+    near_box {{ type searchableBox; min {foam_vector(near.lo)}; max {foam_vector(near.hi)}; }}
+    wake_box {{ type searchableBox; min {foam_vector(wake.lo)}; max {foam_vector(wake.hi)}; }}
 }}
 
 castellatedMeshControls
@@ -315,7 +317,7 @@ castellatedMeshControls
     }}
 
     // A point in the fluid: the mesh is kept on this side of the surfaces.
-    locationInMesh {_vec(location)};
+    locationInMesh {foam_vector(location)};
     allowFreeStandingZoneFaces true;
 }}
 
@@ -370,7 +372,7 @@ debug 0;
 """)
 
     # Quality limits snappyHexMesh enforces while snapping and adding layers (the OpenFOAM defaults).
-    _foam_file(case_dir, "system/meshQualityDict", """
+    write_foam_file(case_dir, "system/meshQualityDict", """
 maxNonOrtho          65;
 maxBoundarySkewness  20;
 maxInternalSkewness  4;
@@ -398,7 +400,7 @@ errorReduction       0.75;
             pointAndNormalDict {{ point (0 {y:.6g} 0); normal (0 1 0); }}
             interpolate false;
         }}""" for y in _slice_positions(geometry, bodies))
-    _foam_file(case_dir, "system/meshSlices", f"""
+    write_foam_file(case_dir, "system/meshSlices", f"""
 functions
 {{
     meshSlices
@@ -417,7 +419,7 @@ functions
 }}
 """)
 
-    _foam_file(case_dir, "system/controlDict", """
+    write_foam_file(case_dir, "system/controlDict", """
 application     simpleFoam;
 startFrom       startTime;
 startTime       0;
@@ -433,7 +435,7 @@ timeFormat      general;
 runTimeModifiable false;
 """)
     # snappyHexMesh needs these two files to exist; the solver stage will replace them.
-    _foam_file(case_dir, "system/fvSchemes", """
+    write_foam_file(case_dir, "system/fvSchemes", """
 ddtSchemes           { default steadyState; }
 gradSchemes          { default Gauss linear; }
 divSchemes           { default none; }
@@ -442,11 +444,12 @@ interpolationSchemes { default linear; }
 snGradSchemes        { default corrected; }
 wallDist             { method meshWave; }
 """)
-    _foam_file(case_dir, "system/fvSolution", "solvers {}")
-    _foam_file(case_dir, "system/decomposeParDict", f"numberOfSubdomains {n_procs};\nmethod scotch;")
+    write_foam_file(case_dir, "system/fvSolution", "solvers {}")
+    write_foam_file(case_dir, "system/decomposeParDict", f"numberOfSubdomains {n_procs};\nmethod scotch;")
 
     info: dict[str, object] = {
-        "case": case_dir.name,
+        "slurm_job_id": os.environ.get("SLURM_JOB_ID"),
+        "written_at": datetime.now().isoformat(timespec="seconds"),
         "geometry": geometry.name,
         "deflections_deg": deflections_deg,
         "n_procs": n_procs,
@@ -468,7 +471,7 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
 
     case = CaseSpec.from_toml(args.case_file)
-    settings = MeshSettings.from_toml(case.mesh)
+    settings = MeshSettings.from_toml(case.mesh, case.mesh_overrides)
     write_mesh_case(case.load_geometry(), settings, case.deflections_deg, args.case_dir, args.n_procs)
     shutil.copyfile(args.case_file, args.case_dir / "case.toml")
     print(f"wrote mesh case to {args.case_dir}")

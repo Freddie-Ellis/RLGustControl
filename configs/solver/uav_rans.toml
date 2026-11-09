@@ -10,8 +10,7 @@ kinematic_viscosity = 1.5e-5   # air at 15 C (m^2/s)
 turbulence_intensity = 0.005
 viscosity_ratio = 10.0
 
-max_iterations = 3000
-residual_target = 1e-5
+max_iterations = 3000   # no residual stopping rule: residuals fell below 1e-5 long before the forces settled
 
 # Converged when C_L, C_D and C_m each vary by less than 0.1% (of max(|mean|, 0.1)) over the last 200
 # iterations; the run stops early once C_L and C_D do, but not before iteration 500.

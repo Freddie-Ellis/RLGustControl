@@ -27,6 +27,7 @@ import math
 import shutil
 import sys
 from pathlib import Path
+from typing import Any
 
 from src.cfd.geometry import StrictModel
 
@@ -45,7 +46,7 @@ class SolveResult(StrictModel):
     speed_m_s: float
     iterations: int
     max_iterations: int
-    stopped_early: bool          # before max_iterations, by the convergence monitor or residual control
+    stopped_early: bool          # before max_iterations, by the convergence monitor
     converged: bool
     final_residuals: dict[str, float]
     coefficients: dict[str, WindowValue]
@@ -104,6 +105,46 @@ def _cross(a: tuple[float, ...] | list[float], b: tuple[float, ...] | list[float
     return (a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0])
 
 
+type Vec3 = tuple[float, float, float]
+
+
+def _aircraft_loads(solve_dir: Path) -> tuple[list[float], list[Vec3], list[Vec3]]:
+    """Iterations, and the aircraft's total force and moment (about the reference point) at each."""
+    post = solve_dir / "postProcessing"
+    force_cols, force_rows = read_table("forces_aircraft/*/force.dat", post)
+    moment_cols, moment_rows = read_table("forces_aircraft/*/moment.dat", post)
+    if not force_rows or not moment_rows:
+        raise FileNotFoundError(f"{post}: no forces_aircraft output (did simpleFoam run?)")
+    n = min(len(force_rows), len(moment_rows))
+    return ([r[0] for r in force_rows[:n]], _vectors(force_cols, force_rows)[:n],
+            _vectors(moment_cols, moment_rows)[:n])
+
+
+def _coefficients(info: dict[str, Any], forces: list[Vec3], moments: list[Vec3]) -> dict[str, list[float]]:
+    """C_L, C_D, C_Y, C_l, C_m, C_n for each force and moment (see the module docstring)."""
+    settings, reference = info["settings"], info["reference"]
+    q = 0.5 * settings["density"] * settings["speed"] ** 2
+    area, chord, span = reference["area_m2"], reference["length_m"], reference["span_m"]
+    drag_dir = [c / settings["speed"] for c in info["freestream_velocity_m_s"]]
+    lift_dir = info["lift_direction"]
+    side_dir = _cross(lift_dir, drag_dir)
+    return {
+        "C_L": [_dot(f, lift_dir) / (q * area) for f in forces],
+        "C_D": [_dot(f, drag_dir) / (q * area) for f in forces],
+        "C_Y": [_dot(f, side_dir) / (q * area) for f in forces],
+        "C_l": [-m[0] / (q * area * span) for m in moments],
+        "C_m": [m[1] / (q * area * chord) for m in moments],
+        "C_n": [-m[2] / (q * area * span) for m in moments],
+    }
+
+
+def coefficient_history(solve_dir: Path) -> tuple[list[float], dict[str, list[float]]]:
+    """Iterations, and the aircraft's coefficients at each, as averaged for results.json (for plotting)."""
+    info = json.loads((solve_dir / "solve_case.json").read_text())
+    iterations, forces, moments = _aircraft_loads(solve_dir)
+    return iterations, _coefficients(info, forces, moments)
+
+
 def build_result(solve_dir: Path) -> SolveResult:
     info = json.loads((solve_dir / "solve_case.json").read_text())
     settings = info["settings"]
@@ -111,31 +152,16 @@ def build_result(solve_dir: Path) -> SolveResult:
     post = solve_dir / "postProcessing"
     warnings: list[str] = []
 
-    force_cols, force_rows = read_table("forces_aircraft/*/force.dat", post)
-    moment_cols, moment_rows = read_table("forces_aircraft/*/moment.dat", post)
-    if not force_rows or not moment_rows:
-        raise FileNotFoundError(f"{post}: no forces_aircraft output (did simpleFoam run?)")
-    iterations = int(force_rows[-1][0])
-    window = min(int(settings["convergence_window"]), len(force_rows))
+    steps, all_forces, all_moments = _aircraft_loads(solve_dir)
+    iterations = int(steps[-1])
+    window = min(int(settings["convergence_window"]), len(steps))
     if window < int(settings["convergence_window"]):
         warnings.append(f"only {window} iterations recorded, fewer than the convergence window")
 
-    forces = _vectors(force_cols, force_rows)[-window:]
-    moments = _vectors(moment_cols, moment_rows)[-window:]
+    forces, moments = all_forces[-window:], all_moments[-window:]
     q = 0.5 * settings["density"] * settings["speed"] ** 2
-    area, chord, span = reference["area_m2"], reference["length_m"], reference["span_m"]
-    drag_dir = [c / settings["speed"] for c in info["freestream_velocity_m_s"]]
-    lift_dir = info["lift_direction"]
-    side_dir = _cross(lift_dir, drag_dir)
-
-    coefficients = {
-        "C_L": _window([_dot(f, lift_dir) / (q * area) for f in forces]),
-        "C_D": _window([_dot(f, drag_dir) / (q * area) for f in forces]),
-        "C_Y": _window([_dot(f, side_dir) / (q * area) for f in forces]),
-        "C_l": _window([-m[0] / (q * area * span) for m in moments]),
-        "C_m": _window([m[1] / (q * area * chord) for m in moments]),
-        "C_n": _window([-m[2] / (q * area * span) for m in moments]),
-    }
+    area, chord = reference["area_m2"], reference["length_m"]
+    coefficients = {name: _window(values) for name, values in _coefficients(info, forces, moments).items()}
     tolerance = settings["convergence_tolerance"]
     unsettled = [name for name in MONITORED
                  if coefficients[name].range > tolerance * max(abs(coefficients[name].mean), 0.1)]

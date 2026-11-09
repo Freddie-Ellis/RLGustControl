@@ -1,0 +1,15 @@
+# Layer test on the fine study mesh (base cell 0.288 m), mesh only: displacementMotionSolver to make room for the layers
+# Compare its layer coverage and checkMesh result with mesh_fine (configs/cases/mesh_study/mesh_fine.toml),
+# which uses the defaults. Submit all the tests together:
+#     bash hpc/submit_cases.sh configs/cases/mesh_tests
+# The winning setting then goes into configs/mesh/uav.toml for all three study meshes.
+
+description = "Layer test, fine mesh: displacementMotionSolver to make room for the layers"
+geometry = "cad/uav/geometry.toml"
+mesh = "configs/mesh/uav.toml"
+
+[deflections_deg]
+
+[mesh_overrides]
+base_cell_size = 0.288
+layer_shrinker = "displacement"

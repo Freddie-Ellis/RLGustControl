@@ -74,8 +74,9 @@ class SolverSettings(StrictModel):
     turbulence_intensity: float = Field(default=0.005, gt=0)
     viscosity_ratio: float = Field(default=10.0, gt=0)
 
+    # No residual stopping rule: started from potential flow, the residuals fell below 1e-5 within ~150
+    # iterations while the forces were still changing. Runs stop on the force coefficients (below) or here.
     max_iterations: int = Field(default=3000, gt=0)
-    residual_target: float = Field(default=1e-5, gt=0)  # simpleFoam stops when every residual is below this
 
     # Converged when, over the last convergence_window iterations, each of C_L, C_D and C_m varies by less than
     # convergence_tolerance * max(|mean|, 0.1). The run stops early once C_L and C_D meet this (after
@@ -403,12 +404,6 @@ SIMPLE
 {{
     nNonOrthogonalCorrectors {s.n_non_orthogonal_correctors};
     consistent      yes;   // SIMPLEC: no pressure under-relaxation needed
-    residualControl
-    {{
-        p               {s.residual_target:g};
-        U               {s.residual_target:g};
-        "(k|omega)"     {s.residual_target:g};
-    }}
 }}
 
 // potentialFoam, run first to give simpleFoam a better starting field than uniform flow.

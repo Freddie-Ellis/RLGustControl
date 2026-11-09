@@ -49,6 +49,7 @@ Status: geometry, meshing and the solver setup are implemented. Meshing has been
 | `src/cfd/solve_report.py` | Turns the solver output into coefficients, hinge moments and a convergence verdict (`results.json`) |
 | `src/cfd/submit.py` | Submits mesh and solve jobs to Slurm, skipping finished work (run through `hpc/submit_cases.sh`) |
 | `src/cfd/runs.py` | Lists every run and its state, read from the run folders |
+| `src/cfd/plot_solves.py` | Plots convergence histories and coefficients against α for one or more downloaded run folders, and prints the slopes |
 
 | HPC file | Purpose |
 |---|---|
@@ -66,6 +67,7 @@ Status: geometry, meshing and the solver setup are implemented. Meshing has been
 4. **Submit**: `bash hpc/submit_cases.sh configs/cases/<name>.toml`, or a folder of case files. Add `--dry-run` to see what would be submitted, `--mesh-only` to stop before solving, and `--mesh-time` / `--solve-time HH:MM:SS` to change the time limits.
 5. **Monitor**: `squeue -u $USER` lists jobs as `mesh_<case>` and `solve_<case>_<condition>`. `tail -f hpc/runs/<case>/mesh/slurm_<jobid>.out` follows a job.
 6. **Check**: after `module load $(cat .venv-hpc/python_module) && source .venv-hpc/bin/activate`, run `python -m src.cfd.runs` for one line per case, or `python -m src.cfd.runs --solves` for one line per flow condition with its coefficients.
+7. **Plot** (locally): download the run folders, then run `uv run python -m src.cfd.plot_solves <data folder>/<case> ...` in the VS Code terminal. It writes convergence plots per case and one coefficient figure (all six coefficients against α and the drag polar, every case overlaid) to `<first run folder>/plots/`. It also prints the coefficients, the lift-curve and pitching-moment slopes with the static margin, and the sideslip derivatives. `--show` opens the figures.
 
 ### 1. Geometry
 - The aircraft is a SolidWorks multibody part. The CFD uses only the outer (wetted) surface. The main body and each control surface are separate bodies: the current model (`cad/uav/`) has a main body and six control surfaces per side (wingtip, leading-edge flap, outboard and inboard trailing-edge flaps, upper and lower splitter flaps).
@@ -144,6 +146,8 @@ hpc/runs/<case name>/
 `hpc/submit_cases.sh` submits a mesh job per case, then a solve job per flow condition that waits for the mesh (and is cancelled if the mesh fails). It skips anything already finished or queued, so resubmitting a case only runs what is missing. Flow conditions can be added to a meshed case and resubmitted; changing a meshed case's geometry, mesh settings, deflections or overrides is refused instead of silently replacing the mesh (delete its `mesh/` folder to remesh). The mesh is identified by those file paths, not their contents: after editing `configs/mesh/uav.toml`, delete the affected `mesh/` folders to remesh.
 
 **Mesh-independence study:** `configs/cases/mesh_study/` has three undeflected cases that differ only in `base_cell_size` (0.512, 0.384, 0.288 m, so every cell size changes by 4/3), each solved at α = 0, 10, 20, 30° and β = 0, 5°. The coarsest mesh whose coefficients agree with the next finer one (to within about 1–2%) is used for the dataset. Submit the meshes with `bash hpc/submit_cases.sh configs/cases/mesh_study --mesh-only`, then, once a single test solve has worked, the solves with `bash hpc/submit_cases.sh configs/cases/mesh_study --solve-time 08:00:00` (finished meshes are skipped).
+
+**Layer tests:** `configs/cases/mesh_tests/` holds mesh-only variants of the fine study mesh, each changing one layer setting (`n_layer_iter`, `layer_shrinker`, `n_grow`), to compare layer coverage and checkMesh results with `mesh_fine`. The setting that works best goes into `configs/mesh/uav.toml`, so all three study meshes use it.
 
 ### 6. Dataset (planned)
 - **Sampling:** deflections sampled with a space-filling design (Latin hypercube or Sobol), each case solved over a grid of α and β.

@@ -38,7 +38,7 @@ import shutil
 import tomllib
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import torch
 from pydantic import Field
@@ -102,6 +102,10 @@ class MeshSettings(StrictModel):
     layer_expansion_ratio: float = 1.2
     final_layer_thickness: float = 0.5
     min_layer_thickness: float = 0.1
+    n_grow: int = Field(default=0, ge=0)  # where layers collapse, also stop them over this many rings of faces
+    # How snappyHexMesh moves the mesh aside for the layers: "medial_axis" (its default) or "displacement"
+    # (displacementMotionSolver, a Laplacian solve: slower, often better coverage on curves and junctions).
+    layer_shrinker: Literal["medial_axis", "displacement"] = "medial_axis"
 
     # Iteration counts. More iterations rarely improve the result once it settles, but cost run time.
     n_snap_solve_iter: int = 100     # snapping: mesh-displacement smoothing iterations (nSolveIter)
@@ -223,6 +227,10 @@ def write_mesh_case(
     fixed_names = [b.name for b in geometry.fixed_bodies]
     surface_names = [c.name for c in geometry.control_surfaces]
     wall_regex = "(" + "|".join(bodies) + ")"
+    shrinker = "" if s.layer_shrinker == "medial_axis" else f"""
+    meshShrinker        displacementMotionSolver;
+    solver              displacementLaplacian;
+    displacementLaplacianCoeffs {{ diffusivity quadratic inverseDistance ({" ".join(bodies)}); }}"""
 
     # Background mesh: one block of uniform hex cells. All six faces form one far-field patch, "freestream":
     # the solver's freestream conditions make each part of it an inlet or an outlet depending on whether the
@@ -343,7 +351,7 @@ addLayersControls
     expansionRatio      {s.layer_expansion_ratio:g};
     finalLayerThickness {s.final_layer_thickness:g};
     minThickness        {s.min_layer_thickness:g};
-    nGrow               0;
+    nGrow               {s.n_grow};
     featureAngle        130;
     slipFeatureAngle    30;
     nRelaxIter          5;
@@ -355,7 +363,7 @@ addLayersControls
     minMedialAxisAngle  90;
     nBufferCellsNoExtrude 0;
     nLayerIter          {s.n_layer_iter};
-    nRelaxedIter        {s.n_relaxed_layer_iter};
+    nRelaxedIter        {s.n_relaxed_layer_iter};{shrinker}
 }}
 
 meshQualityControls

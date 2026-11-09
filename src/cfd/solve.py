@@ -30,8 +30,8 @@ Function objects (written to postProcessing/):
     forces_aircraft          total force and moment on all walls, moments about the reference point
     forces_<surface>         force and moment on each control surface, moments about a point on its hinge
                              (the hinge moment is the component along the hinge axis; see solve_report.py)
-    forceCoeffs_aircraft     lift and drag coefficients for monitoring, and for stopping on convergence
-    converged                stops the run once the lift and drag coefficients have settled
+    forceCoeffs_aircraft     lift and drag coefficients, for monitoring
+    converged                stops the run once C_L, C_D and C_m have settled (see SolverSettings)
     solverInfo               residuals at every iteration
     yPlus, wallShearStress   written with the final fields
     wallSurfaces             pressure, wall shear stress and y+ on the walls as VTK, to download
@@ -74,16 +74,15 @@ class SolverSettings(StrictModel):
     turbulence_intensity: float = Field(default=0.005, gt=0)
     viscosity_ratio: float = Field(default=10.0, gt=0)
 
-    # No residual stopping rule: started from potential flow, the residuals fell below 1e-5 within ~150
-    # iterations while the forces were still changing. Runs stop on the force coefficients (below) or here.
     max_iterations: int = Field(default=3000, gt=0)
 
-    # Converged when, over the last convergence_window iterations, each of C_L, C_D and C_m varies by less than
-    # convergence_tolerance * max(|mean|, 0.1). The run stops early once C_L and C_D meet this (after
-    # convergence_start iterations, so the starting transient can't trigger it).
+    # Converged once C_L, C_D and C_m are each within convergence_tolerance of their running mean over
+    # convergence_window iterations. OpenFOAM stops the run then (runTimeControl in the controlDict), and
+    # solve_report.py applies the same test to the final iteration. For a drifting coefficient the gap is about
+    # its change over the window, so a run can't stop while still drifting. (No residual stopping rule:
+    # residuals fell below 1e-5 while the forces were still changing.)
     convergence_window: int = Field(default=200, gt=0)
-    convergence_tolerance: float = Field(default=1e-3, gt=0)
-    convergence_start: int = Field(default=500, ge=0)
+    convergence_tolerance: float = Field(default=1e-4, gt=0)
 
     n_non_orthogonal_correctors: int = Field(default=1, ge=0)  # the meshes reach ~70 deg non-orthogonality
     keep_fields: bool = True  # keep the final 3D fields (~200 MB per condition); results are kept regardless
@@ -291,19 +290,19 @@ functions
         writeInterval   1;
     }}
 
-    // Stop once lift and drag have settled (see SolverSettings), writing the final fields.
+    // Stop, writing the fields, once Cl, Cd and CmPitch are each within tolerance of their running mean over
+    // the window (delta = |current - mean|). See SolverSettings.
     converged
     {{
         type            runTimeControl;
         libs            (utilityFunctionObjects);
-        timeStart       {s.convergence_start};
         conditions
         {{
             coefficients
             {{
                 type            average;
                 functionObject  forceCoeffs_aircraft;
-                fields          (Cl Cd);
+                fields          (Cl Cd CmPitch);
                 tolerance       {s.convergence_tolerance:g};
                 window          {s.convergence_window};
                 windowType      approximate;

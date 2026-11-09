@@ -13,7 +13,7 @@
 #   <last iteration>/          the final 3D fields, unless keep_fields = false in the solver settings
 #
 # Steps: Python writes the case (linked to the mesh) -> decomposePar -> potentialFoam (starting field)
-#        -> simpleFoam (MPI) -> reconstructPar -> report.
+#        -> simpleFoam (MPI, stops early once converged) -> reconstructPar -> report.
 
 #SBATCH --job-name=solve
 #SBATCH --nodes=1

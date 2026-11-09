@@ -13,9 +13,10 @@ Coefficients (q = 1/2 rho V^2, S reference area, c reference chord, b span):
                     hinge axis, positive in the direction of positive deflection
 
 Every value is the mean over the last convergence_window iterations, with its range (max - min) over that
-window. A run is converged if the range of each of C_L, C_D and C_m is below convergence_tolerance *
-max(|mean|, 0.1). An unconverged run (e.g. unsteady separated flow at high alpha) is still reported, with its
-ranges showing how much it was oscillating, so it can be judged or rerun.
+window. A run is converged if, at its last iteration, each of C_L, C_D and C_m is within convergence_tolerance
+of its running mean: the test OpenFOAM's runTimeControl uses to stop the run (see solve.py). An unconverged run
+(e.g. unsteady separated flow at high alpha) is still reported, with its ranges showing how much it was
+oscillating, so it can be judged or rerun.
 
 Run by hand on a solve folder:
     python -m src.cfd.solve_report hpc/runs/<case name>/solve/a+08.0_b+00.0
@@ -46,7 +47,7 @@ class SolveResult(StrictModel):
     speed_m_s: float
     iterations: int
     max_iterations: int
-    stopped_early: bool          # before max_iterations, by the convergence monitor
+    stopped_early: bool          # before max_iterations, by the stopping rule in solve.py
     converged: bool
     final_residuals: dict[str, float]
     coefficients: dict[str, WindowValue]
@@ -145,6 +146,16 @@ def coefficient_history(solve_dir: Path) -> tuple[list[float], dict[str, list[fl
     return iterations, _coefficients(info, forces, moments)
 
 
+def gap_from_running_mean(values: list[float], window: int) -> float:
+    """|last value - running mean|, the mean as OpenFOAM's runTimeControl `average` condition computes it
+    (windowType approximate): the plain mean of the first `window` values, after which each new value has
+    weight 1 / window."""
+    mean = values[0]
+    for n, value in enumerate(values[1:], start=2):
+        mean += (value - mean) / min(n, window)
+    return abs(values[-1] - mean)
+
+
 def build_result(solve_dir: Path) -> SolveResult:
     info = json.loads((solve_dir / "solve_case.json").read_text())
     settings = info["settings"]
@@ -161,13 +172,16 @@ def build_result(solve_dir: Path) -> SolveResult:
     forces, moments = all_forces[-window:], all_moments[-window:]
     q = 0.5 * settings["density"] * settings["speed"] ** 2
     area, chord = reference["area_m2"], reference["length_m"]
-    coefficients = {name: _window(values) for name, values in _coefficients(info, forces, moments).items()}
-    tolerance = settings["convergence_tolerance"]
-    unsettled = [name for name in MONITORED
-                 if coefficients[name].range > tolerance * max(abs(coefficients[name].mean), 0.1)]
+    history = _coefficients(info, all_forces, all_moments)
+    coefficients = {name: _window(values[-window:]) for name, values in history.items()}
+    gaps = {name: gap_from_running_mean(history[name], int(settings["convergence_window"])) for name in MONITORED}
+    # Like OpenFOAM, only judge once a full window has been averaged.
+    full_window = len(steps) > int(settings["convergence_window"])
+    unsettled = [name for name, gap in gaps.items() if not (full_window and gap < settings["convergence_tolerance"])]
     if unsettled:
         warnings.append("not converged: " + ", ".join(
-            f"{n} varies by {coefficients[n].range:.3g} over the last {window} iterations" for n in unsettled))
+            f"{n} is {gaps[n]:.2g} from its running mean (tolerance {settings['convergence_tolerance']:g})"
+            for n in unsettled))
 
     hinge_moment: dict[str, WindowValue] = {}
     hinge_coefficient: dict[str, WindowValue] = {}

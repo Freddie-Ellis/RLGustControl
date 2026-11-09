@@ -10,13 +10,12 @@ kinematic_viscosity = 1.5e-5   # air at 15 C (m^2/s)
 turbulence_intensity = 0.005
 viscosity_ratio = 10.0
 
-max_iterations = 3000   # no residual stopping rule: residuals fell below 1e-5 long before the forces settled
+max_iterations = 3000
 
-# Converged when C_L, C_D and C_m each vary by less than 0.1% (of max(|mean|, 0.1)) over the last 200
-# iterations; the run stops early once C_L and C_D do, but not before iteration 500.
+# Converged once C_L, C_D and C_m are each within 1e-4 of their running mean over 200 iterations (OpenFOAM's
+# runTimeControl average); the run stops then, otherwise at max_iterations. The report uses the same test.
 convergence_window = 200
-convergence_tolerance = 1e-3
-convergence_start = 500
+convergence_tolerance = 1e-4
 
 n_non_orthogonal_correctors = 1   # the meshes reach ~70 deg non-orthogonality
 keep_fields = true                # keep the final 3D fields (~200 MB per condition) for inspection

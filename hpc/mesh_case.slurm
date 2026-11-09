@@ -12,8 +12,9 @@
 #   log.*                      one log per step
 #   mesh_case.json             every setting used, the job id and when the case was written
 #   mesh_report.json           cell counts, quality metrics, layer coverage, pass/fail
-#   postProcessing/meshSlices/ cutting planes and wall surfaces (VTK) with quality fields: download these
-#   postProcessing/checkMesh/  VTK surfaces of any faces checkMesh flags as bad
+#   postProcessing/meshSlices/ cutting planes and wall surfaces (VTK) with quality fields, and layer coverage
+#                              on the walls: download these
+#   postProcessing/constant/   VTK surfaces of any faces checkMesh flags as bad (e.g. lowQualityTetFaces/)
 #
 # Steps: Python writes the case (aircraft skin STL, its feature edges, dictionaries) -> blockMesh
 #        -> decomposePar -> snappyHexMesh (MPI) -> reconstructParMesh -> checkMesh -> slices -> report.
@@ -54,6 +55,19 @@ run_step blockMesh blockMesh
 run_step decomposePar decomposePar -force
 run_step snappyHexMesh run_parallel snappyHexMesh -overwrite
 run_step reconstructParMesh reconstructParMesh -constant
+# snappyHexMesh writes its layer fields (layers added and share of the requested thickness reached, per wall
+# face) into the processor folders only. Rebuild them into constant/, next to checkMesh's fields, so the wall
+# surface in postProcessing/meshSlices/ carries them. For viewing only, so a failure is just a warning.
+ls -R processor0 > log.reconstructLayerFields 2>&1 || true   # records where they were written
+if reconstructPar -withZero -constant -fields '(nSurfaceLayers thickness thicknessFraction)' \
+        >> log.reconstructLayerFields 2>&1; then
+    for field in nSurfaceLayers thickness thicknessFraction; do
+        if [ -f "0/${field}" ]; then mv "0/${field}" constant/; fi
+    done
+    rmdir 0 2>/dev/null || true
+else
+    echo "warning: rebuilding the layer fields failed; see log.reconstructLayerFields"
+fi
 rm -rf processor*   # the mesh is reconstructed, so the per-processor copies are no longer needed
 
 echo

@@ -409,7 +409,9 @@ functions
         libs            (sampling);
         surfaceFormat   vtk;
         interpolationScheme cell;
-        fields          (cellVolume cellAspectRatio nonOrthoAngle skewness cellShapes);
+        // nSurfaceLayers and thicknessFraction (achieved / requested layer thickness) are snappyHexMesh's
+        // layer fields, only non-zero on the walls; fields that are missing are skipped.
+        fields          (cellVolume cellAspectRatio nonOrthoAngle skewness cellShapes nSurfaceLayers thicknessFraction);
         surfaces
         {{
 {planes}

@@ -52,7 +52,7 @@ echo
 echo "=== Meshing ==="
 run_step blockMesh blockMesh
 run_step decomposePar decomposePar -force
-run_step snappyHexMesh mpirun -np "${SLURM_NTASKS}" snappyHexMesh -parallel -overwrite
+run_step snappyHexMesh run_parallel snappyHexMesh -overwrite
 run_step reconstructParMesh reconstructParMesh -constant
 rm -rf processor*   # the mesh is reconstructed, so the per-processor copies are no longer needed
 

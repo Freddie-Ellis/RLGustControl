@@ -23,6 +23,20 @@ load_openfoam() {
     fi
 }
 
+# Run an OpenFOAM application in parallel on the job's tasks: run_parallel simpleFoam [options].
+# mpirun binds rank n to core n by default. Our jobs that shared a node all ran at 1/N speed (CPU time = wall
+# time / number of jobs on the node), so they were evidently bound to the same cores. Unbound, the OS spreads
+# the ranks over free cores.
+run_parallel() {
+    local bind=()
+    if mpirun --version 2>&1 | grep -q "Open MPI"; then
+        bind=(--bind-to none)
+    elif mpirun --version 2>&1 | grep -qi "hydra\|mpich"; then
+        bind=(-bind-to none)
+    fi
+    mpirun -np "${SLURM_NTASKS}" "${bind[@]}" "$@" -parallel
+}
+
 load_python() {
     local venv="${repo_root}/.venv-hpc"
     if [ ! -f "${venv}/python_module" ]; then
@@ -53,4 +67,6 @@ print_environment() {
     echo "OpenFOAM:      ${WM_PROJECT_VERSION:-not loaded}"
     echo "Python:        $(command -v python) ($(python --version 2>&1))"
     echo "Commit:        $(git -C "${repo_root}" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+    echo "MPI:           $(mpirun --version 2>&1 | head -n 1)"
+    echo "Allowed CPUs:  $(grep Cpus_allowed_list /proc/self/status | cut -f 2) of $(nproc --all) on the node"
 }

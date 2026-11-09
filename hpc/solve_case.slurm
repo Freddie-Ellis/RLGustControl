@@ -59,12 +59,12 @@ echo "=== Solving ==="
 run_step decomposePar decomposePar -force
 # A potential-flow solution is a better start than uniform flow. If it fails, simpleFoam starts from uniform.
 echo "--- potentialFoam"
-if mpirun -np "${SLURM_NTASKS}" potentialFoam -parallel -writephi > log.potentialFoam 2>&1; then
+if run_parallel potentialFoam -writephi > log.potentialFoam 2>&1; then
     echo "    done"
 else
     echo "    warning: potentialFoam failed (see log.potentialFoam); starting from uniform flow"
 fi
-run_step simpleFoam mpirun -np "${SLURM_NTASKS}" simpleFoam -parallel
+run_step simpleFoam run_parallel simpleFoam
 run_step reconstructPar reconstructPar -latestTime
 rm -rf processor*
 

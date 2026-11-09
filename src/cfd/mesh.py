@@ -31,6 +31,7 @@ Run as a script (normally from the Slurm job), with a case file from configs/cas
 
 import argparse
 import json
+import math
 import shutil
 import tomllib
 from pathlib import Path
@@ -135,12 +136,21 @@ def _foam_file(case_dir: Path, relative_path: str, body: str) -> None:
 
 
 def _domain(lo: torch.Tensor, hi: torch.Tensor, s: MeshSettings) -> tuple[Box, tuple[int, int, int]]:
-    """Background box around the aircraft bounding box [lo, hi], sized to a whole number of base cells."""
+    """Background box around the aircraft bounding box [lo, hi], sized to a whole number of base cells.
+
+    Spanwise (y) the box is centred on y = 0 with an even number of cells, so a cell face lies on the
+    centreline and the background mesh is its own mirror image. Mirror-image geometries (and the left and
+    right halves of a symmetric one) are then refined identically, rather than differently depending on where
+    the cells happen to fall relative to each side.
+    """
     length = float(hi[0] - lo[0])
     pad_lo = torch.tensor([s.upstream_lengths, s.lateral_lengths, s.lateral_lengths], dtype=torch.float64)
     pad_hi = torch.tensor([s.downstream_lengths, s.lateral_lengths, s.lateral_lengths], dtype=torch.float64)
     d_lo = lo - pad_lo * length
     n_cells = torch.ceil((hi + pad_hi * length - d_lo) / s.base_cell_size).to(torch.int64)
+    half_ny = math.ceil((max(-float(lo[1]), float(hi[1])) + s.lateral_lengths * length) / s.base_cell_size)
+    d_lo[1] = -half_ny * s.base_cell_size
+    n_cells[1] = 2 * half_ny
     d_hi = d_lo + n_cells * s.base_cell_size
     nx, ny, nz = (int(n) for n in n_cells)
     return Box(lo=tuple(d_lo.tolist()), hi=tuple(d_hi.tolist())), (nx, ny, nz)
@@ -194,6 +204,9 @@ def write_mesh_case(
 
     corners = torch.cat([t.reshape(-1, 3) for t in bodies.values()])
     lo, hi = corners.min(dim=0).values, corners.max(dim=0).values
+    # Make the box symmetric about y = 0 (see _domain), so the refinement boxes are symmetric too.
+    half_span = max(-float(lo[1]), float(hi[1]))
+    lo[1], hi[1] = -half_span, half_span
     length = float(hi[0] - lo[0])
     domain, (nx, ny, nz) = _domain(lo, hi, s)
     pad = s.near_padding_lengths * length

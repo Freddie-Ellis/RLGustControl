@@ -9,7 +9,7 @@ from src.ml.taps.latin_hyper import CASES_DIR, DESIGN_INPUTS, DesignInput
 
 CONTOUR_RESOLUTION: int = 80
 PLOTS_DIR: Path = Path(__file__).parent / "plots"
-cases_name = "batch_2"
+cases_name = "cfd_cases1"  # the CSV file in CASES_DIR to plot; must exist
 
 INPUTS: dict[str, DesignInput] = {i.name: i for i in DESIGN_INPUTS}
 

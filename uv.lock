@@ -191,7 +191,7 @@ requires-dist = [
     { name = "manifold3d", specifier = ">=3.5.4" },
     { name = "matplotlib", specifier = ">=3.11.1" },
     { name = "maturin", specifier = ">=1.14.1" },
-    { name = "neurolume", specifier = ">=0.1.3" },
+    { name = "neurolume", directory = "../Neurolume/neurolume" },
     { name = "polars", specifier = ">=1.44.2" },
     { name = "pydantic", specifier = ">=2.13.5" },
     { name = "pyqtgraph", specifier = ">=0.14.0" },
@@ -366,17 +366,29 @@ wheels = [
 
 [[package]]
 name = "neurolume"
-version = "0.1.3"
-source = { registry = "https://pypi.org/simple" }
+version = "0.1.6"
+source = { directory = "../Neurolume/neurolume" }
 dependencies = [
     { name = "numpy", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "pydantic", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "tornado", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/a1/90/07f92ad724ca86741ce3b9fd4050e40ec11deaea30a0b4f4df7cab0ae108/neurolume-0.1.3.tar.gz", hash = "sha256:48944f98628ea42eb78f5d9b2b2ec7c9eaeba50c2d95225efe97fa9bd74886f3", size = 3166399, upload-time = "2026-11-03T14:13:32.925Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/80/41/1a0d1dcaaaa0b9dc5aced1532d8ca1436ba3f6c26e96ac5459e7e31501fc/neurolume-0.1.3-py3-none-any.whl", hash = "sha256:8912979e740129d714be07e3f16af9be777ed1b3c61ac8e1a8bf03ec1ff30ee5", size = 3163016, upload-time = "2026-11-03T14:13:30.792Z" },
+
+[package.metadata]
+requires-dist = [
+    { name = "build", marker = "extra == 'dev'", specifier = ">=1.2" },
+    { name = "keras", marker = "extra == 'keras'", specifier = ">=3.0" },
+    { name = "numpy", specifier = ">=1.24" },
+    { name = "pydantic", specifier = ">=2.5" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
+    { name = "qtpy", marker = "extra == 'qt'", specifier = ">=2.4" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },
+    { name = "tensorflow", marker = "extra == 'tensorflow'", specifier = ">=2.15" },
+    { name = "torch", marker = "extra == 'torch'", specifier = ">=2.0" },
+    { name = "torchvision", marker = "extra == 'examples'", specifier = ">=0.17" },
+    { name = "tornado", specifier = ">=6.4" },
 ]
+provides-extras = ["torch", "tensorflow", "keras", "qt", "dev", "examples"]
 
 [[package]]
 name = "numpy"

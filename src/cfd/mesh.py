@@ -454,7 +454,10 @@ interpolationSchemes { default linear; }
 snGradSchemes        { default corrected; }
 wallDist             { method meshWave; }
 """)
-    write_foam_file(case_dir, "system/fvSolution", "solvers {}")
+    # The displacement layer shrinker solves for the mesh motion, so it needs a linear solver for it.
+    displacement_solver = ("cellDisplacement { solver GAMG; smoother GaussSeidel; tolerance 1e-6; relTol 0.01; }"
+                           if s.layer_shrinker == "displacement" else "")
+    write_foam_file(case_dir, "system/fvSolution", f"solvers {{ {displacement_solver} }}")
     write_foam_file(case_dir, "system/decomposeParDict", f"numberOfSubdomains {n_procs};\nmethod scotch;")
 
     info: dict[str, object] = {

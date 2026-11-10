@@ -22,9 +22,9 @@ CASES_DIR: Path = Path(__file__).parent / "cfd_cases"
 N_ACTUATORS: int = 12
 ACTUATOR_MIN_DEG: float = 0.0
 ACTUATOR_MAX_DEG: float = 20.0
-AOA_MIN_DEG: float = -5.0
-AOA_MAX_DEG: float = 15.0
-NOMINAL_AOA_DEG: float = 5.0  # placeholder: AoA the wing normally flies at
+AOA_MIN_DEG: float = 0
+AOA_MAX_DEG: float = 25
+NOMINAL_AOA_DEG: float = 10.0  # placeholder: AoA the wing normally flies at
 SIDESLIP_MAX_DEG: float = 10.0  # placeholder: largest sideslip the active grid's gusts produce
 ANGLE_RESOLUTION_DEG: float = 0.5  # smallest angle step the CFD setup / mesh deformation can use
 
@@ -198,7 +198,7 @@ def cfd_cases(n_lhs: int, existing: pl.DataFrame | None = None, seed: int = 0) -
 def main() -> None:
     cases = cfd_cases(n_lhs=120)
     print(cases["kind"].value_counts(sort=True))
-    cases.write_csv(CASES_DIR / "batch_2.csv")
+    cases.write_csv(CASES_DIR / "cfd_cases1.csv")
 
 
 if __name__ == "__main__":

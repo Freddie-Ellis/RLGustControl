@@ -1,0 +1,32 @@
+# SAC on the XFOIL pitch problem. Omitted keys use the defaults in src/ml/run_config.py.
+name = "sac_xfoil_pitch"
+seed = 42
+
+[env]
+kind = "xfoil_pitch"
+
+[env.spec]
+dt = 0.01
+horizon = 100
+
+[env.params]
+tau = 0.3
+cl_ref = 0.5
+gust_len = 1.0
+gust_amp_deg = 4.0
+base_alpha_deg = 4.0
+act_limit = 1.0
+flap_max_deg = 15.0
+flap_hinge_x = 0.75
+action_cost = 0.01
+naca = "0012"
+reynolds = 1e6
+xfoil_path = "C:\\XFOIL6.99\\xfoil.exe"
+timeout_s = 30.0
+
+[policy]
+hidden = 256
+
+[algo]
+iterations = 60
+n_envs = 16

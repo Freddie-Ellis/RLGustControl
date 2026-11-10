@@ -1,11 +1,13 @@
+import cProfile
 from pathlib import Path
 
-from qtpy.QtGui import QCloseEvent
+from qtpy.QtGui import QCloseEvent, QShortcut
 from qtpy.QtWidgets import QMainWindow, QTabWidget
 
-from src.ui.tabs.data_tab import DataTab
+from src.ui.tabs.compare_tab import CompareTab
 from src.ui.tabs.rollout_tab import RolloutTab
 from src.ui.tabs.runs_tab import RunsTab
+from src.ui.tabs.session_tab import SessionTab
 from src.ui.tabs.train_tab import TrainTab
 
 
@@ -18,18 +20,24 @@ class MainWindow(QMainWindow):
         self.runs = RunsTab()
         self.rollout = RolloutTab()
         self.train = TrainTab()
-        self.data = DataTab()
+        self.session = SessionTab()
+        self.compare = CompareTab()
+        self.profiler = cProfile.Profile()
+
+        self.profile_shortcut = QShortcut("Ctrl+Shift+P", self)
+        self.profile_shortcut.activated.connect(self._launch_profiler)
 
         self.tabs = QTabWidget()
         self.tabs.addTab(self.runs, "Runs")
         self.tabs.addTab(self.rollout, "Rollout")
         self.tabs.addTab(self.train, "Train")
-        self.tabs.addTab(self.data, "Data")
+        self.tabs.addTab(self.session, "SAC Session")
+        self.tabs.addTab(self.compare, "Compare")
         self.setCentralWidget(self.tabs)
 
         self.runs.replay_requested.connect(self._replay)
         self.runs.template_requested.connect(self._use_as_template)
-        self.train.run_started.connect(lambda _: self.runs.refresh())
+        self.train.run_started.connect(lambda _: (self.runs.refresh(), self.compare.refresh()))
         self.train.run_finished.connect(self._on_run_finished)
 
     def _replay(self, path: Path) -> None:
@@ -45,7 +53,18 @@ class MainWindow(QMainWindow):
     def _on_run_finished(self, _path: Path) -> None:
         self.runs.refresh()
         self.rollout.refresh_runs()
+        self.compare.refresh()
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        if not self.session.shutdown():
+            event.ignore()
+            return
         self.train.shutdown()
         super().closeEvent(event)
+
+    def _launch_profiler(self) -> None:
+        if self.profiler.getstats():
+            self.profiler.disable()
+            self.profiler.dump_stats("profile.prof")
+        else:
+            self.profiler.enable()

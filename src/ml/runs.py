@@ -1,26 +1,32 @@
 """On-disk format for training runs.
 
-runs/<YYYYmmdd-HHMMSS>_<name>/
+runs/<YYYYmmdd-HHMMSS>_<name>/   a training run (train.py)
+runs/<session>/                  a distributed learner's run: named after its session and carried on when it resumes
     config.json   the exact RunConfig used
     metrics.csv   one row per iteration, appended while training (read with Polars)
     policy.pt     policy weights (state_dict)
     status.json   RunStatus: running / done / stopped / failed
     STOP          created by the UI to ask a running training process to stop
+    output.log    everything the process printed, errors included (the distributed learner writes it, so its output
+                  can be followed from another machine)
 """
 
 import csv
+import io
+import socket
+import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Literal
+from typing import Literal, TextIO
 
 import polars as pl
 from pydantic import BaseModel
 
 from src.config import CONFIG
 from src.ml.envs.base import Env
-from src.ml.policies.base import Policy
-from src.ml.registry import build_env, build_policy
+from src.ml.policy import SquashedGaussianPolicy
+from src.ml.registry import build_env
 from src.ml.run_config import RunConfig
 
 type RunState = Literal["running", "done", "stopped", "failed"]
@@ -44,11 +50,27 @@ class RunDir:
     @classmethod
     def create(cls, cfg: RunConfig, root: Path = CONFIG.runs_dir) -> RunDir:
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        run = cls(root / f"{stamp}_{cfg.name}")
-        run.path.mkdir(parents=True, exist_ok=False)
-        run.config_path.write_text(cfg.model_dump_json(indent=2))
-        run.write_status(RunStatus(started=datetime.now()))
+        return cls(root / f"{stamp}_{cfg.name}")._init(cfg)
+
+    @classmethod
+    def open_named(cls, cfg: RunConfig, name: str, root: Path = CONFIG.runs_dir) -> RunDir:
+        """`root/name`: created if new, otherwise carried on (marked running again; metrics keep appending).
+        Raises ValueError if the existing run was made with a different config."""
+        run = cls(root / name)
+        if not run.status_path.exists():
+            return run._init(cfg, exist_ok=True)  # an empty folder is fine to start in
+        if run.read_config().model_dump() != cfg.model_dump():
+            raise ValueError(f"{run.path} is a run with a different config; use another name or delete it")
+        status = run.read_status()
+        status.state, status.finished, status.error = "running", None, None
+        run.write_status(status)
         return run
+
+    def _init(self, cfg: RunConfig, exist_ok: bool = False) -> RunDir:
+        self.path.mkdir(parents=True, exist_ok=exist_ok)
+        self.config_path.write_text(cfg.model_dump_json(indent=2))
+        self.write_status(RunStatus(started=datetime.now()))
+        return self
 
     # ----- paths -----
     @property
@@ -75,6 +97,19 @@ class RunDir:
     def stop_path(self) -> Path:
         return self.path / "STOP"
 
+    @property
+    def log_path(self) -> Path:
+        return self.path / "output.log"
+
+    def tee_output(self) -> None:
+        """From now on, also write everything this process prints (stdout and stderr, so an uncaught traceback too)
+        to output.log. Appends: a resumed run keeps one log, with a line marking each start."""
+        # Line-buffered, so it can be read while the run goes on; open until the process ends, so no `with`.
+        log = open(self.log_path, "a", encoding="utf-8", buffering=1)  # noqa: SIM115
+        log.write(f"--- started {datetime.now():%Y-%m-%d %H:%M:%S} on {socket.gethostname()} ---\n")
+        sys.stdout = _Tee(sys.stdout, log)
+        sys.stderr = _Tee(sys.stderr, log)
+
     # ----- read / write -----
     def read_config(self) -> RunConfig:
         return RunConfig.model_validate_json(self.config_path.read_text())
@@ -99,8 +134,10 @@ class RunDir:
         if not self.metrics_path.exists():
             return pl.DataFrame()
         try:
-            return pl.read_csv(self.metrics_path)
-        except (pl.exceptions.ComputeError, pl.exceptions.NoDataError):
+            # Every metric is a number. Read as text then cast, rather than let Polars guess from the first rows: a
+            # column that starts with `nan` (losses before the first update) would otherwise come back as strings.
+            return pl.read_csv(self.metrics_path, infer_schema=False).with_columns(pl.all().cast(pl.Float64))
+        except (pl.exceptions.ComputeError, pl.exceptions.NoDataError, pl.exceptions.InvalidOperationError):
             return pl.DataFrame()  # file caught mid-write by a running training process
 
     def request_stop(self) -> None:
@@ -108,6 +145,26 @@ class RunDir:
 
     def stop_requested(self) -> bool:
         return self.stop_path.exists()
+
+
+class _Tee(io.TextIOBase):
+    """A text stream that writes to several others, e.g. the console and a log file."""
+
+    def __init__(self, *streams: TextIO) -> None:
+        super().__init__()
+        self._streams = streams
+
+    def write(self, s: str) -> int:
+        for stream in self._streams:
+            stream.write(s)
+        return len(s)
+
+    def flush(self) -> None:
+        for stream in self._streams:
+            stream.flush()
+
+    def isatty(self) -> bool:
+        return self._streams[0].isatty()
 
 
 @dataclass
@@ -122,22 +179,23 @@ def list_runs(root: Path = CONFIG.runs_dir) -> list[RunSummary]:
     if not root.exists():
         return []
     out: list[RunSummary] = []
-    for path in sorted(root.iterdir(), reverse=True):
+    for path in root.iterdir():
         run = RunDir(path)
         try:
             out.append(RunSummary(run, run.read_config(), run.read_status()))
         except (OSError, ValueError):
             continue
-    return out
+    # By start time, not name: session-named runs have no timestamp in their name.
+    return sorted(out, key=lambda s: s.status.started.replace(tzinfo=None), reverse=True)
 
 
 def make_env(cfg: RunConfig, n_envs: int, seed: int | None = None) -> Env:
     return build_env(cfg.env, n_envs=n_envs, seed=seed)
 
 
-def make_policy(cfg: RunConfig) -> Policy:
+def make_policy(cfg: RunConfig) -> SquashedGaussianPolicy:
     env = make_env(cfg, n_envs=1)
-    return build_policy(cfg.policy, env.obs_dim, env.act_dim)
+    return SquashedGaussianPolicy(env.obs_dim, env.act_dim, hidden=cfg.policy.hidden, init_log_std=cfg.policy.init_log_std)
 
 
 @dataclass
@@ -145,7 +203,7 @@ class LoadedRun:
     run: RunDir
     config: RunConfig
     status: RunStatus
-    policy: Policy
+    policy: SquashedGaussianPolicy
     metrics: pl.DataFrame
 
 

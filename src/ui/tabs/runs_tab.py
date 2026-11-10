@@ -20,11 +20,12 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
+from src.ml import compare
 from src.ml.runs import RunSummary, list_runs
 from src.ui.plotting import series_pen
 from src.ui.utils.dynamic_vb import DynamicViewBox
 
-COLUMNS = ["Run", "Status", "Env", "Policy", "Algo", "Iters", "Final return"]
+COLUMNS = ["Run", "Status", "Env", "Iters", "Final return"]
 
 
 class RunsTab(QWidget):
@@ -67,7 +68,7 @@ class RunsTab(QWidget):
         self.plot = pg.PlotWidget(viewBox=DynamicViewBox())
         self.plot_vb = self.plot.getViewBox()
         self.plot.addLegend()
-        self.plot.setLabel("bottom", "iteration")
+        self.plot.setLabel("bottom", compare.X_LABEL)
         self.plot.showGrid(x=True, y=True, alpha=0.3)
 
         self.config_view = QPlainTextEdit()
@@ -109,8 +110,7 @@ class RunsTab(QWidget):
         for row, s in enumerate(self._runs):
             final = "" if s.status.final_return is None else f"{s.status.final_return:.3f}"
             values = [
-                s.run.name, s.status.state, s.config.env.kind, s.config.policy.kind,
-                s.config.algo.kind, str(s.status.iterations_done), final,
+                s.run.name, s.status.state, s.config.env.kind, str(s.status.iterations_done), final,
             ]
             for col, v in enumerate(values):
                 self.table.setItem(row, col, QTableWidgetItem(v))
@@ -141,7 +141,7 @@ class RunsTab(QWidget):
         # Offer the metric columns common to all selected runs.
         columns: set[str] | None = None
         for s in sel:
-            cols = set(s.run.read_metrics().columns) - {"iteration"}
+            cols = set(compare.metrics_in(s.run.read_metrics()))
             columns = cols if columns is None else columns & cols
         current = self.metric_combo.currentText()
         self.metric_combo.blockSignals(True)
@@ -161,9 +161,11 @@ class RunsTab(QWidget):
             return
         self.plot.setLabel("left", metric)
         for i, s in enumerate(self._selected()):
-            df = s.run.read_metrics()
-            if metric in df.columns:
-                self.plot.plot(df["iteration"].to_numpy(), df[metric].to_numpy(), pen=series_pen(i), name=s.run.name)
+            c = compare.curve(s.run.read_metrics(), metric)  # every value logged, where it happened
+            if c is not None:
+                pen = series_pen(i)
+                self.plot.plot(c.x, c.y, pen=pen, symbol="o", symbolSize=4, symbolPen=None, symbolBrush=pen.color(),
+                               name=s.run.name)
         self.plot_vb.autoRange() # AutoRange after plotting
     
     def _tick(self) -> None:

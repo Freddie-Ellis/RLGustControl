@@ -26,6 +26,9 @@ Thumbs.db
 .vscode/*
 !.vscode/settings.json
 !.vscode/extensions.json
+
+# Ignore profiles
+*.prof
 # HPC job logs and CFD case runs
 *.out
 /hpc/runs/

@@ -33,6 +33,9 @@ class Env(ABC):
 
     obs_dim: int  # set by each subclass
     act_dim: int
+    priv_dim: int = 0  # size of `privileged()`; 0 if the env has none
+    priv_names: tuple[str, ...] = ()  # one name per privileged column, so tools can find e.g. "cm"
+    history_len: int = 0  # how many past steps the env keeps in its state; 0 = Markov
 
     def __init__(self, spec: EnvSpec, n_envs: int = 1, seed: int | None = None) -> None:
         """Initialize the environment with the given number of parallel environments and an optional random seed."""
@@ -57,6 +60,19 @@ class Env(ABC):
     def step(self, action: Tensor) -> tuple[Tensor, Tensor]:
         """Take an action in the environment and return the next observation and reward."""
 
+    def privileged(self) -> Tensor:
+        """Signals of the CURRENT state that only the critic may see, [N, priv_dim]. Call after reset/step.
+
+        The actor is deployed with the observation alone (pressure taps), but the critic only exists during
+        training, so it can use anything the rig measures, e.g. balance loads or the turbulence setting. A better
+        informed critic gives the actor better gradients. Override in envs that have such signals.
+        """
+        return torch.zeros(self.n_envs, 0)
+
+    def episode_info(self) -> dict[str, float]:
+        """Scalars describing the current episode (e.g. its turbulence level), stored in the episode metadata."""
+        return {}
+
     def _extras(self) -> dict[str, Tensor]:
         """Env-specific signals to record after each step, each [N]. Override to add some."""
         return {}
@@ -64,6 +80,9 @@ class Env(ABC):
     def trace_metrics(self, trace: Trace) -> dict[str, float]:
         """Env-specific summary metrics of a rollout (e.g. lift error). Override to add some."""
         return {}
+
+    def close(self) -> None:
+        """Release anything the env holds (e.g. the tunnel rig). Override if needed; safe to call twice."""
 
     def zero_action(self, obs: Tensor) -> Tensor:
         """Uncontrolled baseline: always act with zeros."""
@@ -95,3 +114,26 @@ class Env(ABC):
             reward=torch.stack(rew_l),
             extras={k: torch.stack(v) for k, v in ext_l.items()},
         )
+
+
+class HistoryWrapper(Env):
+    """Wraps an env to add a history of past states to the observation, so the actor sees a Markov state."""
+
+    def __init__(self, env: Env, history_len: int) -> None:
+        self.env = env
+        self.history_len = history_len
+        self.obs_dim = env.obs_dim * history_len
+        self.act_dim = env.act_dim
+        self.priv_dim = env.priv_dim
+
+    def reset(self) -> Tensor:
+        obs = self.env.reset()
+        self._obs_hist = [obs] * self.history_len
+        return torch.cat(self._obs_hist, dim=-1)
+
+    def step(self, action: Tensor) -> tuple[Tensor, Tensor]:
+        next_obs, reward = self.env.step(action)
+        self._obs_hist.append(next_obs)
+        if len(self._obs_hist) > self.history_len:
+            self._obs_hist.pop(0)
+        return torch.cat(self._obs_hist, dim=-1), reward

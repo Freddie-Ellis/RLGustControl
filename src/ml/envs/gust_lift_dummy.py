@@ -4,7 +4,6 @@ import torch
 from pydantic import BaseModel, ConfigDict
 from torch import Tensor
 
-from src.config import CONFIG
 from src.ml.envs.base import Env, EnvSpec, Trace
 
 
@@ -25,6 +24,8 @@ class GustLiftDummyEnv(Env):
 
     obs_dim = 3  # [cl error, scaled cl rate, previous action]
     act_dim = 1
+    priv_dim = 2  # [current gust, episode gust amplitude]: stands in for the tunnel knowing its turbulence setting
+    priv_names = ("gust", "gust_amp")
 
     def __init__(self, spec: EnvSpec, params: GustLiftParams, n_envs: int, seed: int | None = None) -> None:
         super().__init__(spec, n_envs, seed)
@@ -35,7 +36,7 @@ class GustLiftDummyEnv(Env):
         self.gust_t0 = torch.zeros(n_envs)
 
     def _rand(self, *shape: int) -> Tensor:
-        return torch.rand(*shape, generator=self.rng, device=CONFIG.torch_device)
+        return torch.rand(*shape, generator=self.rng)  # envs live on the CPU; only the learner uses the GPU
 
     def _gust(self) -> Tensor:
         """1-cosine gust velocity at the current time, for every env."""
@@ -68,6 +69,9 @@ class GustLiftDummyEnv(Env):
         err = self.cl - self.params.cl_ref
         reward = -(err**2) - self.params.action_cost * u**2
         return self._obs(cl_dot), reward
+
+    def privileged(self) -> Tensor:
+        return torch.stack([self._gust(), self.gust_amp], dim=-1)
 
     def trace_metrics(self, trace: Trace) -> dict[str, float]:
         err = trace.extras["cl"] - self.params.cl_ref

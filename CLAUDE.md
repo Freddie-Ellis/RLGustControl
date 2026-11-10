@@ -1,10 +1,12 @@
 # CLAUDE.md
 
 ## Project
-University Part IV GDP: online estimation and reinforcement-learning-based control for unsteady aerodynamic systems hit by large-amplitude gusts. Goal: detect disturbances from surface pressure sensors on a 2D wing, estimate unsteady forces, and synthesise controllers that hold a desired aerodynamic performance (e.g. constant lift) during gust encounters.
+University Part IV GDP: online estimation and reinforcement-learning-based control for unsteady aerodynamic systems hit by large-amplitude gusts. Goal: detect disturbances from surface pressure sensors on a 3D delta wing model (~50 taps), estimate unsteady forces, and synthesise controllers that hold a desired aerodynamic performance (e.g. zero pitching moment) during gust encounters.
 
 ## Modelling approach
 Combine Physics Augmented Auto Encoders (PA-AE), LSTM networks and RL to control the wing in extreme aerodynamic conditions.
+
+RL is SAC only, with one policy (`SquashedGaussianPolicy` in `src/ml/policy.py`). Only the environment is selectable in a run config. Don't add an algorithm or policy choice back. (`src/ml/tutorial/` is standalone learning material with its own PPO.)
 
 ## Code structure
 - Python is the main language (`main.py`, Python >= 3.14, managed with uv; `pyproject.toml` / `uv.lock`).
@@ -26,3 +28,5 @@ Use these, and don't substitute alternatives:
 - Use Polars, never Pandas.
 - Put performance-critical code in the Rust backend rather than slow Python loops.
 - Ask before adding new dependencies.
+- Keep UI and functionality separate. Functional code (`src/ml/`, `src/hw/`, `src/data/`) never imports Qt. UI code (`src/ui/`) only displays results and launches functional code; it holds no logic of its own.
+- Settings and constants live with the functional code they belong to (module constants, configs, function defaults). The UI only sets a value when it has a widget for exactly that setting (e.g. the shared-folder box). Otherwise it passes the functional module's own value through, so there is one obvious place each constant comes from.

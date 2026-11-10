@@ -3,8 +3,9 @@
 /*/target/*
 Cargo.lock
 
-# Python virtual environment
+# Python virtual environments (.venv-hpc is created on the HPC by hpc/setup_python.sh)
 .venv/
+.venv-hpc/
 __pycache__/
 *.pyc
 *.pyo
@@ -28,3 +29,6 @@ Thumbs.db
 
 # Ignore profiles
 *.prof
+# HPC job logs and CFD case runs
+*.out
+/hpc/runs/

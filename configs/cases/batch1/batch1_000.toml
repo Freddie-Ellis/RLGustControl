@@ -1,0 +1,11 @@
+# Written by src/cfd/batch_cases.py: rows 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35 of the case table (see index.csv).
+
+description = "Batch case batch1_000: 36 flow condition(s)"
+geometry = "cad/uav/geometry.toml"
+mesh = "configs/mesh/uav.toml"
+solver = "configs/solver/uav_rans.toml"
+
+[deflections_deg]
+
+[flow]
+pairs = [[0, 0], [1, 0], [2, 0], [3, 0], [4, 0], [5, 0], [6, 0], [7, 0], [8, 0], [9, 0], [10, 0], [11, 0], [12, 0], [13, 0], [14, 0], [15, 0], [16, 0], [17, 0], [18, 0], [19, 0], [20, 0], [21, 0], [22, 0], [23, 0], [24, 0], [25, 0], [10, -10], [10, -8], [10, -6], [10, -4], [10, -2], [10, 2], [10, 4], [10, 6], [10, 8], [10, 10]]

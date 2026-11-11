@@ -1,0 +1,22 @@
+# Mesh check at full deflection (mesh only): every wingtip and flap at +50 deg, the splitters at 70 deg (their
+# largest opening on the rig). Submit with   bash hpc/submit_cases.sh configs/cases/full_deflection.toml
+# Signs (cad/uav/geometry.toml): wingtips and trailing-edge flaps +50 = trailing edge up; leading-edge flaps
+# +50 = leading edge down; splitters open (upper up, lower down).
+
+description = "Mesh check: every wingtip and flap at +50 deg, splitters at 70 deg"
+geometry = "cad/uav/geometry.toml"
+mesh = "configs/mesh/uav.toml"
+
+[deflections_deg]
+wingtip_r = 50.0
+wingtip_l = 50.0
+le_flap_r = 50.0
+le_flap_l = 50.0
+obte_flap_r = 50.0
+obte_flap_l = 50.0
+ibte_flap_r = 50.0
+ibte_flap_l = 50.0
+upr_splitter_flap_r = 70.0
+upr_splitter_flap_l = 70.0
+lwr_splitter_flap_r = 70.0
+lwr_splitter_flap_l = 70.0

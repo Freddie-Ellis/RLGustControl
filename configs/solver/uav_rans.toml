@@ -1,0 +1,26 @@
+# Steady RANS settings for the UAV (simpleFoam, k-omega SST). Loaded by src/cfd/solve.py
+# (SolverSettings.from_toml). SI units.
+
+# TODO: set to the design cruise speed. Coefficients change little with speed over a small range.
+speed = 20.0                   # freestream airspeed (m/s); Reynolds number ~4.4e5 on the 0.33 m MAC
+density = 1.225                # air at sea level (kg/m^3)
+kinematic_viscosity = 1.5e-5   # air at 15 C (m^2/s)
+
+# Freestream turbulence: 0.5% intensity, eddy viscosity 10x molecular (typical low-turbulence external flow).
+turbulence_intensity = 0.005
+viscosity_ratio = 10.0
+
+max_iterations = 3000
+
+# Converged once C_L, C_D and C_m are each within 1e-4 of their running mean over 200 iterations (OpenFOAM's
+# runTimeControl average); the run stops then, otherwise at max_iterations. The report uses the same test.
+convergence_window = 200
+convergence_tolerance = 1e-4
+
+n_non_orthogonal_correctors = 1   # the meshes reach ~70 deg non-orthogonality
+keep_fields = true                # keep the final 3D fields (~200 MB per condition) for inspection
+
+# Slices of p, U, k and nut written with the final fields (postProcessing/flowSlices/<iteration>/, VTK):
+# planes of constant x from the nose to one aircraft length behind it, and of constant y across the span.
+n_slices_x = 10
+n_slices_y = 11   # odd, so one plane is on the centreline (offset 0.5 mm from the mesh faces at y = 0)

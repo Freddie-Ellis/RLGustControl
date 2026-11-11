@@ -1,9 +1,11 @@
-"""Write CFD case files for a table of cases, e.g. the design in src/ml/taps/cfd_cases/cfd_cases1.csv.
+"""Write CFD case files for a table of cases, e.g. the design in src/ml/taps/cfd_cases/cfd_cases2.csv.
 
-    uv run python -m src.cfd.batch_cases src/ml/taps/cfd_cases/cfd_cases1.csv configs/cases/batch1
+    uv run python -m src.cfd.batch_cases src/ml/taps/cfd_cases/cfd_cases2.csv configs/cases/batch2
 
-The table has one row per CFD case: `case` (an id), actuator_0_deg ... actuator_11_deg, aoa_deg and
-sideslip_deg. Rows with the same actuator angles share a mesh, so they become one case file (one mesh) solved at
+The table has one row per CFD case: `case` (an id), a deflection column per control surface, aoa_deg and
+sideslip_deg. Deflection columns are named after the surfaces (wingtip_r_deg, ..., lwr_splitter_flap_l_deg), or
+numbered actuator_0_deg ... actuator_11_deg in ACTUATOR_SURFACES order (as in cfd_cases1.csv).
+Rows with the same actuator angles share a mesh, so they become one case file (one mesh) solved at
 each of their (alpha, beta) pairs. Case files are named <folder name>_<first case id>, e.g. batch1_036.toml, and
 index.csv in the folder maps every row's case id to its case file and condition folder, i.e. to its results in
 hpc/runs/<case file>/solve/<condition>/results.json. Submit them all with
@@ -28,7 +30,16 @@ ACTUATOR_SURFACES: tuple[str, ...] = (
     "wingtip_r", "wingtip_l", "le_flap_r", "le_flap_l", "obte_flap_r", "obte_flap_l", "ibte_flap_r",
     "ibte_flap_l", "upr_splitter_flap_r", "upr_splitter_flap_l", "lwr_splitter_flap_r", "lwr_splitter_flap_l",
 )
-ACTUATOR_COLUMNS: list[str] = [f"actuator_{k}_deg" for k in range(len(ACTUATOR_SURFACES))]
+ACTUATOR_COLUMNS: list[str] = [f"{s}_deg" for s in ACTUATOR_SURFACES]
+NUMBERED_COLUMNS: list[str] = [f"actuator_{k}_deg" for k in range(len(ACTUATOR_SURFACES))]
+
+
+def named_columns(table: pl.DataFrame) -> pl.DataFrame:
+    """The table with numbered actuator columns renamed to <surface>_deg; any missing column is an error."""
+    table = table.rename({n: c for n, c in zip(NUMBERED_COLUMNS, ACTUATOR_COLUMNS) if n in table.columns})
+    if missing := [c for c in ["case", *ACTUATOR_COLUMNS, "aoa_deg", "sideslip_deg"] if c not in table.columns]:
+        raise SystemExit(f"the case table has no column(s) {', '.join(missing)}")
+    return table
 
 
 def check_rows(table: pl.DataFrame, geometry: GeometryConfig, mesh: MeshSettings) -> list[str]:
@@ -65,14 +76,14 @@ def case_file(name: str, ids: list[int], deflections: dict[str, float], pairs: l
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Write CFD case files for a table of cases.")
-    parser.add_argument("table", type=Path, help="CSV with case, actuator_<k>_deg, aoa_deg, sideslip_deg")
-    parser.add_argument("out_dir", type=Path, help="folder for the case files, e.g. configs/cases/batch1")
+    parser.add_argument("table", type=Path, help="CSV with case, <surface>_deg, aoa_deg, sideslip_deg")
+    parser.add_argument("out_dir", type=Path, help="folder for the case files, e.g. configs/cases/batch2")
     parser.add_argument("--geometry", type=Path, default=Path("cad/uav/geometry.toml"))
     parser.add_argument("--mesh", type=Path, default=Path("configs/mesh/uav.toml"))
     parser.add_argument("--solver", type=Path, default=Path("configs/solver/uav_rans.toml"))
     args = parser.parse_args(argv)
 
-    table = pl.read_csv(args.table)
+    table = named_columns(pl.read_csv(args.table))
     problems = check_rows(table, GeometryConfig.from_toml(args.geometry), MeshSettings.from_toml(args.mesh))
     if problems:
         raise SystemExit(f"{len(problems)} of {table.height} rows can't be run; nothing written:\n  "

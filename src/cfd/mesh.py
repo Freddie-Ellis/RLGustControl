@@ -6,7 +6,8 @@
                                        named solid per body; each solid becomes a wall patch of that name
     constant/triSurface/aircraft_features.obj   its sharp edges (chosen in skin.py), read by snappyHexMesh
                                        for feature refinement and snapping
-    system/blockMeshDict               background box of uniform hex cells around the aircraft
+    system/blockMeshDict               background box of uniform hex cells around the aircraft, pitched to
+                                       line up with its flat surfaces (background_pitch_deg)
     system/snappyHexMeshDict           refinement, snapping and prism-layer settings
     system/meshQualityDict             quality limits snappyHexMesh must respect while moving points
     system/meshSlices                  cutting planes + wall surfaces written as small VTK files to download
@@ -72,6 +73,10 @@ class MeshSettings(StrictModel):
 
     # Background cell size; refinement level n gives cells of base_cell_size / 2**n.
     base_cell_size: float = Field(default=0.384, gt=0)
+    # Nose-up pitch of the background cells about the y axis (deg). Set it to the incidence of the aircraft's
+    # flat surfaces: a flat surface at a small angle to the cells starts as a staircase, and snapping leaves a
+    # small dent wherever the staircase steps up a cell, a row of evenly spaced dimples (see _background_axes).
+    background_pitch_deg: float = Field(default=0.0, ge=-45, le=45)
 
     # Surface refinement as (min, max) levels: min everywhere on the surface, max where it curves sharply
     # (by more than resolve_feature_angle between neighbouring cells, e.g. at leading edges).
@@ -133,8 +138,23 @@ class Box(StrictModel):
     hi: Vec3
 
 
+def _background_axes(pitch_deg: float) -> torch.Tensor:
+    """The background mesh's x, y and z axes as the rows of a 3 x 3 matrix, in model coordinates.
+
+    The axes are the model's, pitched nose-up by `pitch_deg` about y (the x axis tilts trailing edge down). A
+    point p has coordinates p @ axes.T along them, and coordinates q along them are the point q @ axes.
+    With the pitch set to the wing's incidence, the wing's flat surfaces lie parallel to the cell faces. At any
+    other angle a surface crosses a layer of surface cells every cell size / tan(angle) (28.6 mm for 1.5 mm
+    cells at 3 deg), and each crossing is left as a shallow dent after snapping.
+    """
+    a = math.radians(pitch_deg)
+    return torch.tensor([[math.cos(a), 0.0, -math.sin(a)], [0.0, 1.0, 0.0], [math.sin(a), 0.0, math.cos(a)]],
+                        dtype=torch.float64)
+
+
 def _domain(lo: torch.Tensor, hi: torch.Tensor, s: MeshSettings) -> tuple[Box, tuple[int, int, int]]:
     """Background box around the aircraft bounding box [lo, hi], sized to a whole number of base cells.
+    Both boxes are in the background mesh's axes (see _background_axes).
 
     Spanwise (y) the box is centred on y = 0 with an even number of cells, so a cell face lies on the
     centreline and the background mesh is its own mirror image. Mirror-image geometries (and the left and
@@ -155,8 +175,8 @@ def _domain(lo: torch.Tensor, hi: torch.Tensor, s: MeshSettings) -> tuple[Box, t
 
 
 def _location_in_mesh(lo: torch.Tensor, hi: torch.Tensor, domain: Box, s: MeshSettings) -> Vec3:
-    """A point in the fluid, one aircraft length upstream. It is nudged off cell faces at every refinement
-    level, since snappyHexMesh needs it strictly inside a cell."""
+    """A point in the fluid, one aircraft length upstream, in the background mesh's axes like its arguments.
+    It is nudged off cell faces at every refinement level, since snappyHexMesh needs it strictly inside a cell."""
     target = torch.tensor([float(lo[0] - (hi[0] - lo[0])), float(lo[1] + hi[1]) / 2, float(lo[2] + hi[2]) / 2])
     origin = torch.tensor(domain.lo)
     cells = torch.floor((target - origin) / s.base_cell_size)
@@ -206,7 +226,16 @@ def write_mesh_case(
     half_span = max(-float(lo[1]), float(hi[1]))
     lo[1], hi[1] = -half_span, half_span
     length = float(hi[0] - lo[0])
-    domain, (nx, ny, nz) = _domain(lo, hi, s)
+    # The background box and the point in the fluid are laid out along the background mesh's (pitched) axes,
+    # then turned back into model coordinates; the refinement boxes below stay in model coordinates.
+    axes = _background_axes(s.background_pitch_deg)
+    along = corners @ axes.T
+    lo_bg, hi_bg = along.min(dim=0).values, along.max(dim=0).values
+    lo_bg[1], hi_bg[1] = -half_span, half_span
+    domain, (nx, ny, nz) = _domain(lo_bg, hi_bg, s)
+    location_bg = _location_in_mesh(lo_bg, hi_bg, domain, s)
+    x, y, z = (torch.tensor(location_bg, dtype=torch.float64) @ axes).tolist()
+    location: Vec3 = (x, y, z)
     pad = s.near_padding_lengths * length
     near = Box(lo=tuple((lo - pad).tolist()), hi=tuple((hi + pad).tolist()))
     # Over the wake box's length the wake drifts sideways by length * tan(angle): up at positive alpha
@@ -219,7 +248,6 @@ def write_mesh_case(
         lo=(float(hi[0]) - 0.1 * length, near.lo[1] - drift, near.lo[2] - fall),
         hi=(float(hi[0]) + reach, near.hi[1] + drift, near.hi[2] + rise),
     )
-    location = _location_in_mesh(lo, hi, domain, s)
     fixed_names = [b.name for b in geometry.fixed_bodies]
     surface_names = [c.name for c in geometry.control_surfaces]
     wall_regex = "(" + "|".join(bodies) + ")"
@@ -227,14 +255,19 @@ def write_mesh_case(
     # Background mesh: one block of uniform hex cells. All six faces form one far-field patch, "freestream":
     # the solver's freestream conditions make each part of it an inlet or an outlet depending on whether the
     # flow enters or leaves there, so the same mesh serves every angle of attack and sideslip.
+    # The block's corners are given in the background axes and turned into model coordinates, so the block
+    # (and every cell in it) is pitched by background_pitch_deg.
     (x0, y0, z0), (x1, y1, z1) = domain.lo, domain.hi
+    box_corners = torch.tensor([(x0, y0, z0), (x1, y0, z0), (x1, y1, z0), (x0, y1, z0),
+                                (x0, y0, z1), (x1, y0, z1), (x1, y1, z1), (x0, y1, z1)], dtype=torch.float64) @ axes
+    vertices = [f"({x:.9g} {y:.9g} {z:.9g})" for x, y, z in box_corners.tolist()]
     write_foam_file(case_dir, "system/blockMeshDict", f"""
 scale 1;
 
 vertices
 (
-    ({x0:.6g} {y0:.6g} {z0:.6g}) ({x1:.6g} {y0:.6g} {z0:.6g}) ({x1:.6g} {y1:.6g} {z0:.6g}) ({x0:.6g} {y1:.6g} {z0:.6g})
-    ({x0:.6g} {y0:.6g} {z1:.6g}) ({x1:.6g} {y0:.6g} {z1:.6g}) ({x1:.6g} {y1:.6g} {z1:.6g}) ({x0:.6g} {y1:.6g} {z1:.6g})
+    {" ".join(vertices[:4])}
+    {" ".join(vertices[4:])}
 );
 
 blocks ( hex (0 1 2 3 4 5 6 7) ({nx} {ny} {nz}) simpleGrading (1 1 1) );
@@ -453,7 +486,8 @@ wallDist             { method meshWave; }
         "deflections_deg": deflections_deg,
         "n_procs": n_procs,
         "aircraft_bbox_m": {"lo": lo.tolist(), "hi": hi.tolist()},
-        "domain_m": domain.model_dump(),
+        "domain_m": domain.model_dump(),  # along the background axes
+        "background_axes": axes.tolist(),  # rows: the background mesh's x, y, z axes in model coordinates
         "background_cells": [nx, ny, nz],
         "location_in_mesh": location,
         "settings": settings.model_dump(),

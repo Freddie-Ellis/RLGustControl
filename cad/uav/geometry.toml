@@ -20,9 +20,13 @@ units = "mm"
 stl_offset = [0.0, 0.0, 0.0]
 
 # Planform area and MAC are estimated from the plan-view projection of all bodies (span 650 mm,
-# root chord 520 mm). TODO: replace with the design values, and the moment reference point with the CG.
+# root chord 520 mm, nose at x = -20). TODO: replace with the design values.
+# Moment reference: the aerodynamic centre, about half the root chord on the centreline. It is on the wing's
+# mid-plane (the wing is at 3 deg incidence, so the plane runs from z = -6.9 at x = 131.7 to -23.6 at x = 450.7),
+# so that a flow-aligned (alpha = -3 deg) mirror image changes the sign of C_m exactly.
+# Solves before this change (the mesh study) used the quarter-MAC point [187.9, 0, 0].
 [reference]
-point = [187.9, 0.0, 0.0]   # quarter-MAC (MAC leading edge at x = 106.1)
+point = [235.32, 0.0, -12.33]
 length = 327.35             # mean aerodynamic chord
 span = 650.0                # wing span (wingtip to wingtip)
 area = 168899.0             # planform area (mm^2)

@@ -10,6 +10,11 @@ downstream_lengths = 40.0
 lateral_lengths = 20.0
 base_cell_size = 0.384
 
+# The background cells are pitched nose-up to the wing's 3 deg incidence, so the flat wing surfaces lie
+# parallel to them. Unpitched, each surface crossed a layer of cells every 28.6 mm (1.5 mm cells), and snapping
+# left a ~0.15 mm dimple at each crossing: rows of dimples behind the leading edge and ahead of the flaps.
+background_pitch_deg = 3.0
+
 # Surface refinement (min, max): min everywhere, max where the surface curves sharply (leading edges).
 # Uniform over the whole skin: 1.5 mm, refined to 0.75 mm at leading-edge curvature.
 fixed_body_level = [8, 9]

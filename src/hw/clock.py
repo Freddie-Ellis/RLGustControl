@@ -10,6 +10,7 @@ import sys
 import time
 
 _SPIN_S = 0.0015  # sleep until this close to the deadline, then busy-wait: OS sleep is too coarse to hit it exactly
+LATE_TOLERANCE = 0.1  # a tick served up to this fraction of dt late still counts as on time (jitter, not a miss)
 
 
 class FixedRateClock:
@@ -31,13 +32,13 @@ class FixedRateClock:
     def wait(self) -> None:
         """Block until the next tick."""
         now = time.perf_counter()
-        if now > self._next:
-            # Overran: skip to the next tick still in the future instead of rushing to catch up.
-            behind = int((now - self._next) // self.dt)
-            self.misses += behind
-            self._next += behind * self.dt
-            if behind:
-                now = time.perf_counter()
+        late = now - self._next
+        if late > LATE_TOLERANCE * self.dt:
+            # Overran: wait for the next tick still in the future. This step becomes one long step and the one after
+            # it a full dt again, instead of a long step followed by a short one that catches up.
+            skipped = int(late // self.dt) + 1
+            self.misses += skipped
+            self._next += skipped * self.dt
         if self._next - now > _SPIN_S:
             time.sleep(self._next - now - _SPIN_S)
         while time.perf_counter() < self._next:

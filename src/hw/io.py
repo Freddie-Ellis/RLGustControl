@@ -22,7 +22,13 @@ class SensorBlock:
 class TunnelIO(Protocol):
     """What the env needs from the rig. The DAQ streams continuously in the background (in hardware or a driver
     thread); `read_block` just collects what has arrived. That is what lets a fast, never-stopping tunnel feed a
-    step-based env."""
+    step-based env.
+
+    Watchdog: a backend must return every surface to neutral by itself when no command (`write_surfaces` or
+    `safe_state`) has arrived for a few control periods. The actor process can be killed or hang mid-episode, and
+    then nothing in this code is left running to call `safe_state`. On real hardware that belongs in the servo
+    driver or controller, not in this process.
+    """
 
     n_taps: int
     n_surfaces: int
@@ -33,10 +39,6 @@ class TunnelIO(Protocol):
 
     def write_surfaces(self, deg: Tensor) -> None:
         """Command every control surface [n_surfaces], in degrees. Takes effect after the actuator delay."""
-        ...
-
-    def set_turbulence(self, level: float) -> None:
-        """Set the turbulence device (here: rms gust angle in degrees)."""
         ...
 
     def safe_state(self) -> None:

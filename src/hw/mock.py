@@ -3,8 +3,9 @@
 It is NOT a delta wing model. It has the features that make the real problem hard, so the env, clock, safety layer
 and actor can be tested before going near the tunnel:
 
-    turbulence      random, time-correlated gust angle w(t) whose rms the turbulence device sets
-    actuators       12 surfaces with a command delay and a first-order servo lag
+    turbulence      random, time-correlated gust angle w(t) of a fixed rms: the tunnel's own, which nobody sets
+    actuators       12 surfaces with a command delay and a first-order servo lag, and the watchdog `TunnelIO` asks
+                    of every backend (neutral when commands stop coming)
     aerodynamics    a first-order lag between (gust, deflections) and the loads/pressures
     taps            ~50 pressures: linear in the same lagged state, each surface felt most by nearby taps, + noise
     balance         Fx, Fz, My from the same state, + noise
@@ -22,6 +23,7 @@ import torch
 from pydantic import BaseModel, ConfigDict
 from torch import Tensor
 
+from src.config import RigParams
 from src.hw.io import SensorBlock
 
 
@@ -29,15 +31,12 @@ class MockTunnelParams(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     daq_rate_hz: float = 1000.0
-    n_taps: int = 50
-    n_surfaces: int = 12
     actuator_delay_s: float = 0.004  # command -> servo starts moving
     servo_tau_s: float = 0.02  # servo first-order lag
     aero_tau_s: float = 0.03  # flow/loads lag behind gust and deflection
     turb_tau_s: float = 0.1  # correlation time of the turbulence
-    q_inf: float = 500.0  # dynamic pressure [Pa], ~29 m/s
-    area: float = 0.12  # reference area [m^2]
-    mac: float = 0.35  # mean aerodynamic chord [m]
+    turbulence_deg: float = 2.0  # rms gust angle [deg] of the flow
+    watchdog_s: float = 0.1  # no command for this long -> surfaces to neutral (see TunnelIO: the watchdog)
     alpha0_deg: float = 8.0
     cm_per_gust_deg: float = 0.01  # how strongly turbulence disturbs Cm
     tap_noise_pa: float = 2.0
@@ -46,33 +45,40 @@ class MockTunnelParams(BaseModel):
 
 
 class MockTunnelIO:
-    def __init__(self, params: MockTunnelParams) -> None:
+    def __init__(self, rig: RigParams, params: MockTunnelParams) -> None:
         p = params
+        self.rig = rig
         self.params = p
-        self.n_taps = p.n_taps
-        self.n_surfaces = p.n_surfaces
+        self.n_taps = rig.n_taps
+        self.n_surfaces = rig.n_surfaces
         self.dt = 1.0 / p.daq_rate_hz
         self.rng = torch.Generator().manual_seed(p.seed)
 
         # Fixed "geometry", seeded so every run sees the same wing.
-        tap_pos = torch.rand(p.n_taps, generator=self.rng)  # spanwise position of each tap, 0..1
-        surf_pos = torch.linspace(0.0, 1.0, p.n_surfaces)  # spanwise position of each surface
-        self.cm_per_deg = -0.0025 * (0.6 + 0.8 * surf_pos)  # outboard surfaces have a longer moment arm
-        self.cz_per_deg = torch.full((p.n_surfaces,), 0.004)
+        tap_pos = torch.rand(rig.n_taps, generator=self.rng)  # spanwise position of each tap, 0..1
+        surf_pos = torch.linspace(0.0, 1.0, rig.n_surfaces)  # spanwise position of each surface
+        # Outboard surfaces have a longer moment arm. Neighbouring surfaces pitch the wing opposite ways: the travel
+        # is one-sided (0..max), so surfaces that all pushed Cm the same way could only cancel half of the gusts.
+        sign = torch.where(torch.arange(rig.n_surfaces) % 2 == 0, -1.0, 1.0)
+        self.cm_per_deg = sign * 0.0025 * (0.6 + 0.8 * surf_pos)
+        self.cz_per_deg = torch.full((rig.n_surfaces,), 0.004)
         near = torch.exp(-(((tap_pos[:, None] - surf_pos[None, :]) / 0.15) ** 2))  # [n_taps, n_surfaces]
-        self.cp0 = -1.0 + 1.5 * torch.rand(p.n_taps, generator=self.rng)
-        self.cp_per_gust = 0.03 * (0.5 + torch.rand(p.n_taps, generator=self.rng))
+        self.cp0 = -1.0 + 1.5 * torch.rand(rig.n_taps, generator=self.rng)
+        self.cp_per_gust = 0.03 * (0.5 + torch.rand(rig.n_taps, generator=self.rng))
         self.cp_per_deg = 0.015 * near  # a surface is felt most by the taps near it
 
         # State
         self.t = 0.0  # simulated time [s], kept equal to wall-clock time since open
         self.t0 = time.perf_counter()
-        self.level = 0.0  # turbulence rms [deg]
+        self.level = p.turbulence_deg  # turbulence rms [deg]
         self.w = 0.0  # gust angle [deg]
-        self.cmd = torch.zeros(p.n_surfaces)  # command the servos are tracking [deg]
-        self.defl = torch.zeros(p.n_surfaces)  # actual deflection [deg]
-        self.aero = torch.zeros(1 + p.n_surfaces)  # lagged [gust, deflections] the flow responds to
+        self._neutral = torch.zeros(rig.n_surfaces)
+        self.cmd = self._neutral  # command the servos are tracking [deg]
+        self.defl = torch.zeros(rig.n_surfaces)  # actual deflection [deg]
+        self.aero = torch.zeros(1 + rig.n_surfaces)  # lagged [gust, deflections] the flow responds to
         self.pending: deque[tuple[float, Tensor]] = deque()  # (time it takes effect, command)
+        self.last_command_t = 0.0  # when the last command arrived, for the watchdog
+        self.watchdog_trips = 0  # times the watchdog had to take the surfaces to neutral
         self._t_buf: list[float] = []
         self._aero_buf: list[Tensor] = []
 
@@ -87,6 +93,11 @@ class MockTunnelIO:
             self.t += self.dt
             while self.pending and self.pending[0][0] <= self.t:
                 self.cmd = self.pending.popleft()[1]
+            if self.t - self.last_command_t > p.watchdog_s and self.cmd is not self._neutral:
+                # Nobody is commanding the surfaces any more (the control loop hung or stopped): neutral.
+                self.pending.clear()
+                self.cmd = self._neutral
+                self.watchdog_trips += 1
             # Ornstein-Uhlenbeck turbulence: correlated over turb_tau_s, rms = level.
             noise = float(torch.randn(1, generator=self.rng))
             self.w += -self.w * k_turb + self.level * math.sqrt(2.0 * k_turb) * noise
@@ -98,37 +109,35 @@ class MockTunnelIO:
 
     def read_block(self) -> SensorBlock:
         self._advance_to_now()
-        p = self.params
+        p, rig = self.params, self.rig
         m = len(self._t_buf)
         t = torch.tensor(self._t_buf)
-        aero = torch.stack(self._aero_buf) if m else torch.zeros(0, 1 + p.n_surfaces)
+        aero = torch.stack(self._aero_buf) if m else torch.zeros(0, 1 + rig.n_surfaces)
         self._t_buf, self._aero_buf = [], []
         gust, defl = aero[:, 0], aero[:, 1:]
 
         cp = self.cp0 + gust[:, None] * self.cp_per_gust + defl @ self.cp_per_deg.T
-        taps = p.q_inf * cp + p.tap_noise_pa * torch.randn(m, p.n_taps, generator=self.rng)
+        taps = rig.q_inf * cp + p.tap_noise_pa * torch.randn(m, rig.n_taps, generator=self.rng)
 
         alpha = p.alpha0_deg + gust
         cx = 0.02 + 0.0005 * alpha**2
         cz = 0.05 * alpha + defl @ self.cz_per_deg
         cm = 0.01 + p.cm_per_gust_deg * gust + defl @ self.cm_per_deg
-        qs = p.q_inf * p.area
-        loads = torch.stack([qs * cx, qs * cz, qs * p.mac * cm], dim=-1)
+        qs = rig.q_inf * rig.area
+        loads = torch.stack([qs * cx, qs * cz, qs * rig.mac * cm], dim=-1)
         loads = loads + p.load_noise_n * torch.randn(m, 3, generator=self.rng)
         return SensorBlock(t=t, taps=taps, loads=loads)
 
     def write_surfaces(self, deg: Tensor) -> None:
         self._advance_to_now()  # samples before now used the old command
+        self.last_command_t = self.t
         self.pending.append((self.t + self.params.actuator_delay_s, deg.detach().clone()))
-
-    def set_turbulence(self, level: float) -> None:
-        self._advance_to_now()
-        self.level = level
 
     def safe_state(self) -> None:
         self._advance_to_now()
+        self.last_command_t = self.t
         self.pending.clear()
-        self.pending.append((self.t + self.params.actuator_delay_s, torch.zeros(self.n_surfaces)))
+        self.pending.append((self.t + self.params.actuator_delay_s, self._neutral))
 
     def close(self) -> None:
         self.safe_state()

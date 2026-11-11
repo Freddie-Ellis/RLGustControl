@@ -32,15 +32,15 @@ SolidWorks ─► one STL per body ─► deflect control surfaces ─► merge 
     ─► (planned) Parquet dataset ─► surrogate
 ```
 
-Status: geometry, meshing and the solver setup are implemented. Meshing has been run and checked on Iridis. The solver stage is written and checked locally but has not yet run on Iridis. Collecting results into a dataset is planned.
+Status: geometry, meshing and solving run on Iridis (mesh-independence study done). The first dataset batch (`configs/cases/batch1`) is set up. Collecting results into a dataset is planned.
 
 | Module | Purpose |
 |---|---|
 | `src/cfd/geometry.py` | Loads and validates `cad/<model>/geometry.toml`: bodies, hinges, deflection limits, reference values |
 | `src/cfd/stl.py` | Reads ASCII and binary STL; writes multi-solid ASCII STL and OBJ edge files |
-| `src/cfd/surface.py` | Welds triangles into a mesh, counts open edges, fills small holes |
+| `src/cfd/surface.py` | Welds triangles into an indexed mesh and counts open edges |
 | `src/cfd/deflect.py` | Loads the bodies and rotates control surfaces about their hinges |
-| `src/cfd/skin.py` | Merges the bodies into one closed outer skin (boolean union), picks its feature edges, checks it; also a command to write and check a skin |
+| `src/cfd/skin.py` | Merges the bodies into one closed outer skin (boolean union), picks its feature edges, checks it |
 | `src/cfd/case.py` | Loads a case file: geometry, mesh and solver settings, deflections, flow conditions |
 | `src/cfd/foam.py` | Helpers for writing OpenFOAM input files |
 | `src/cfd/mesh.py` | Writes a ready-to-mesh OpenFOAM case (skin STL, feature edges, every dictionary) |
@@ -49,6 +49,7 @@ Status: geometry, meshing and the solver setup are implemented. Meshing has been
 | `src/cfd/solve_report.py` | Turns the solver output into coefficients, hinge moments and a convergence verdict (`results.json`) |
 | `src/cfd/submit.py` | Submits mesh and solve jobs to Slurm, skipping finished work (run through `hpc/submit_cases.sh`) |
 | `src/cfd/runs.py` | Lists every run and its state, read from the run folders |
+| `src/cfd/batch_cases.py` | Turns a table of cases (deflections, α, β) into case files, one per set of deflections |
 | `src/cfd/plot_solves.py` | Plots convergence histories and coefficients against α for one or more downloaded run folders, and prints the slopes |
 
 | HPC file | Purpose |
@@ -61,12 +62,12 @@ Status: geometry, meshing and the solver setup are implemented. Meshing has been
 
 ### Quick start
 1. **Geometry** (only when the CAD changes): export each body as an STL into `cad/uav/` and check the file names in `cad/uav/geometry.toml` (see section 1).
-2. **Case file**: write `configs/cases/<name>.toml` (see section 5). To check the geometry first (about 20 s):
-   `uv run python -m src.cfd.skin cad/uav/geometry.toml check/skin.stl --cad-units -d wingtip_r=10 wingtip_l=10`
+2. **Case files**: write `configs/cases/<name>.toml` (see section 5), or generate a folder of them from a table of
+   cases: `uv run python -m src.cfd.batch_cases <table.csv> configs/cases/<batch>`.
 3. **On Iridis**: `git pull`, and after a dependency change `bash hpc/setup_python.sh`.
 4. **Submit**: `bash hpc/submit_cases.sh configs/cases/<name>.toml`, or a folder of case files. Add `--dry-run` to see what would be submitted, `--mesh-only` to stop before solving, and `--mesh-time` / `--solve-time HH:MM:SS` to change the time limits.
 5. **Monitor**: `squeue -u $USER` lists jobs as `mesh_<case>` and `solve_<case>_<condition>`. `tail -f hpc/runs/<case>/mesh/slurm_<jobid>.out` follows a job.
-6. **Check**: after `module load $(cat .venv-hpc/python_module) && source .venv-hpc/bin/activate`, run `python -m src.cfd.runs` for one line per case, or `python -m src.cfd.runs --solves` for one line per flow condition with its coefficients.
+6. **Check**: after `module load $(cat .venv-hpc/python_module) && source .venv-hpc/bin/activate`, run `python -m src.cfd.runs` for one line per case (`--failed` for only the failed meshes).
 7. **Plot** (locally): download the run folders, then run `uv run python -m src.cfd.plot_solves <data folder>/<case> ...` in the VS Code terminal. It writes convergence plots per case and one coefficient figure (all six coefficients against α and the drag polar, every case overlaid) to `<first run folder>/plots/`. It also prints the coefficients, the lift-curve and pitching-moment slopes with the static margin, and the sideslip derivatives. `--show` opens the figures.
 
 ### 1. Geometry
@@ -81,7 +82,7 @@ Status: geometry, meshing and the solver setup are implemented. Meshing has been
 - flush faces at an angle to the axes, such as the swept leading-edge flap ends. STL stores single-precision coordinates, so the two copies end up a hair apart. Make the bodies overlap (the leading-edge flaps are 0.3 mm longer at each end).
 - slits and near-misses, such as a loft ending just short of the wing. Extend one body into the other.
 
-Every body must be closed (watertight); the current exports are. Small holes up to `max_hole_perimeter` (20 mm) are filled on load as a safety net, and a larger one stops the pipeline with its location.
+Every body must be closed (watertight); the current exports are. A body with a hole stops the mesh job at the skin step.
 
 The left and right exports are triangulated slightly differently by SolidWorks, so the two sides of a symmetric mesh can differ in small details (for example around the wingtip housings).
 
@@ -94,7 +95,7 @@ Each hinge axis is given by two points, `p1` and `p2`. Positive deflection is a 
 | Leading-edge flap | leading edge down |
 | Upper and lower splitter flaps (0 to 90°) | open (upper swings up, lower swings down) |
 
-For each case the deflected bodies are merged into one closed surface, their boolean union (the `manifold3d` library), which cuts the triangles where bodies meet and keeps only the outside, so no hidden faces are left for snappyHexMesh to refine around. Each triangle remembers which body it came from, and the skin is written as `aircraft.stl` with one named solid (patch) per body. The skin is then checked: it must be closed, and no part of it may face another across a gap narrower than 0.1 mm. A failure names the bodies and the location; `python -m src.cfd.skin` writes the skin, its feature edges (`<name>_features.obj`) and any offending faces (`<name>_narrow_gaps.stl`) for viewing in ParaView.
+For each case the deflected bodies are merged into one closed surface, their boolean union (the `manifold3d` library), which cuts the triangles where bodies meet and keeps only the outside, so no hidden faces are left for snappyHexMesh to refine around. Each triangle remembers which body it came from, and the skin is written as `aircraft.stl` with one named solid (patch) per body. The skin is then checked: it must be closed, and no part of it may face another across a gap narrower than 0.1 mm. A failure names the bodies and the location. The skin and its feature edges are in each mesh folder (`constant/triSurface/aircraft.stl`, `aircraft_features.obj`) for viewing in ParaView.
 
 **Feature edges** (where snappyHexMesh refines and snaps to sharp edges) are chosen in `skin.py`, not by `surfaceFeatureExtract`. Where two bodies meet, their separate triangulations leave a step of a few hundredths of a millimetre along the seam, which a plain angle test sees as a sharp edge, refining every seam and denting the surface. An edge counts only if it turns by more than 30° and both of its faces come from source triangles that are mostly on the outside, which every seam step fails.
 
@@ -103,8 +104,8 @@ For each case the deflected bodies are merged into one closed surface, their boo
 - Background box about 20 aircraft lengths upstream, above, below and to each side, and 40 downstream, centred on the centreline with a cell face on y = 0, so a symmetric aircraft is meshed the same on both sides.
 - Uniform 1.5 mm surface cells, refined to 0.75 mm at sharp curvature (leading edges) and along feature edges; 12 mm cells in a box around the aircraft and in the wake; 5 prism layers on every wall.
 - The six outer faces form one `freestream` patch, and the wake box is widened to contain the wake over the whole angle range in the mesh settings (`min_alpha_deg`, `max_alpha_deg`, `max_beta_deg`: currently α from −10° to 30°, β up to ±10°). So one mesh serves every flow direction in that range, and flow conditions outside it are rejected.
-- The job finishes with `checkMesh` and `mesh_report.json`: cell counts, maximum non-orthogonality (limit 70°) and skewness (limit 4), and prism-layer coverage per wall (warning below 80%). The job fails if the mesh fails. `postProcessing/meshSlices/` holds cutting planes and the wall surfaces with quality fields, and the walls also carry the layer coverage (`nSurfaceLayers`, `thicknessFraction`); all small enough to download and open in ParaView. Faces that checkMesh flags as bad are written as VTK under `postProcessing/constant/`.
-- The medium mesh (`base_cell_size` 0.384 m) has about 2.7M cells before the widened wake box and takes about 3 minutes on 32 cores (one run on a slow node took 30).
+- The job finishes with `checkMesh` and `mesh_report.json`: cell counts, maximum non-orthogonality (limit 70°) and skewness (limit 4), and prism-layer coverage per wall (warning below 80%). The job fails if the mesh fails. `postProcessing/meshSlices/` holds cutting planes and the wall surfaces with quality fields, small enough to download and open in ParaView. Faces that checkMesh flags as bad are written as VTK under `postProcessing/constant/`.
+- The meshes take 5 minutes (coarse, 1.9M cells; medium, 3.4M cells) to 15 minutes (fine, 6.5M cells) on 32 cores. The fine mesh needs 100 layer iterations (`n_layer_iter`) to clear its last bad faces; its leading-edge flaps get about 55–60% of the requested layer thickness, against about 90% on the medium mesh.
 
 ### 4. Solving (simpleFoam)
 - Steady, incompressible RANS with the k-ω SST turbulence model; settings in `configs/solver/uav_rans.toml` (airspeed, air properties, freestream turbulence, iterations, convergence). **The airspeed is a placeholder (20 m/s) until the design cruise speed is set.**
@@ -130,6 +131,7 @@ base_cell_size = 0.288
 [flow]                                    # every combination of these is solved
 alpha_deg = [0.0, 10.0, 20.0]
 beta_deg = [0.0, 5.0]
+pairs = [[10.0, -4.0]]                    # optional: extra (alpha, beta) conditions
 ```
 
 Everything for a case goes in one folder named after it, with inputs and results in files inside rather than in folder names:
@@ -147,9 +149,9 @@ hpc/runs/<case name>/
 
 **Mesh-independence study:** `configs/cases/mesh_study/` has three undeflected cases that differ only in `base_cell_size` (0.512, 0.384, 0.288 m, so every cell size changes by 4/3), each solved at α = 0, 10, 20, 30° and β = 0, 5°. The coarsest mesh whose coefficients agree with the next finer one (to within about 1–2%) is used for the dataset. Submit the meshes with `bash hpc/submit_cases.sh configs/cases/mesh_study --mesh-only`, then, once a single test solve has worked, the solves with `bash hpc/submit_cases.sh configs/cases/mesh_study --solve-time 08:00:00` (finished meshes are skipped).
 
-**Layer tests:** `configs/cases/mesh_tests/` holds mesh-only variants of the fine study mesh, each changing one layer setting (`n_layer_iter`, `layer_shrinker`, `n_grow`), to compare layer coverage and checkMesh results with `mesh_fine`. The setting that works best goes into `configs/mesh/uav.toml`, so all three study meshes use it.
+**Batch cases:** `src/ml/taps/latin_hyper.py` writes the table of cases (an α sweep, a β sweep and a Latin hypercube over the 12 actuators, α and β), and `src/cfd/batch_cases.py` turns it into case files: rows with the same deflections share one case file (one mesh) with their (α, β) `pairs`, and `index.csv` maps every row to its case file and condition folder. Actuators 0–11 are the control surfaces in `geometry.toml` order (wingtips, leading-edge flaps, outboard and inboard trailing-edge flaps, upper and lower splitters; right then left). Every row is checked against the deflection limits and the mesh's angle range before anything is written.
 
 ### 6. Dataset (planned)
-- **Sampling:** deflections sampled with a space-filling design (Latin hypercube or Sobol), each case solved over a grid of α and β.
+- **Sampling:** done (see Batch cases above).
 - **Mirror symmetry:** a case with deflections (left, right) at sideslip β mirrors the case (right, left) at −β, with C_Y, C_l, C_n changing sign and left and right surfaces swapping, so every solved case gives two dataset rows.
 - **Collection:** the `results.json` files are collected into a Polars DataFrame, one row per case and condition (deflections, α, β, coefficients, hinge moments, convergence), saved as Parquet for `src/data/loaders.py`.

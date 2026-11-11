@@ -1,13 +1,13 @@
 """Deflect control surfaces about their hinges, giving the aircraft's bodies for one CFD case.
 
 Given a deflection angle for some or all control surfaces:
-    1. Load every body's STL (as exported from SolidWorks at zero deflection) and fill any small holes.
+    1. Load every body's STL (as exported from SolidWorks at zero deflection; each must be closed).
     2. Rotate each control surface about its hinge axis by its deflection (unlisted surfaces stay at 0).
     3. Convert to metres.
 
 The bodies are then merged into the aircraft's outer skin for meshing (skin.py), keeping one patch per body
-so that forces and hinge moments can be read off per control surface. To view a deflected aircraft, use
-`python -m src.cfd.skin` (see skin.py).
+so that forces and hinge moments can be read off per control surface. The mesh job writes the merged skin to
+<case>/mesh/constant/triSurface/aircraft.stl, which can be viewed in ParaView.
 """
 
 import math
@@ -16,7 +16,6 @@ import torch
 
 from src.cfd.geometry import Body, GeometryConfig, HingeAxis
 from src.cfd.stl import Triangles, read_stl
-from src.cfd.surface import close_surface
 
 
 def rotate_about_axis(
@@ -44,22 +43,15 @@ def deflect(triangles: Triangles, hinge: HingeAxis, deflection_deg: float) -> Tr
 
 
 def load_body(geometry: GeometryConfig, body: Body) -> Triangles:
-    """Read a body's STL in model coordinates (the frame the hinge points are given in) and close any holes."""
-    triangles = read_stl(geometry.stl_path(body)) - torch.tensor(geometry.stl_offset, dtype=torch.float64)
-    try:
-        return close_surface(triangles, geometry.max_hole_perimeter)
-    except ValueError as e:
-        raise ValueError(f"{body.name} ({body.stl}): {e}") from e
+    """Read a body's STL in model coordinates (the frame the hinge points are given in)."""
+    return read_stl(geometry.stl_path(body)) - torch.tensor(geometry.stl_offset, dtype=torch.float64)
 
 
-def deflected_bodies(
-    geometry: GeometryConfig, deflections_deg: dict[str, float], in_metres: bool = True
-) -> dict[str, Triangles]:
-    """Every body of the model, keyed by name, with control surfaces at the requested deflections.
+def deflected_bodies(geometry: GeometryConfig, deflections_deg: dict[str, float]) -> dict[str, Triangles]:
+    """Every body of the model in metres, keyed by name, with control surfaces at the requested deflections.
 
     `deflections_deg` maps control surface names to angles; surfaces not listed stay at 0. Raises if a name
-    is unknown or an angle is outside that surface's limits. Output is in metres unless `in_metres` is False,
-    in which case it stays in the model's units (useful for overlaying on the CAD model).
+    is unknown or an angle is outside that surface's limits.
     """
     geometry.check_deflections(deflections_deg)
 
@@ -71,16 +63,4 @@ def deflected_bodies(
         bodies[surface.name] = deflect(load_body(geometry, surface), surface.hinge, angle)
 
     # Rotate first and scale afterwards, because the hinge points are in the model's units.
-    scale = geometry.scale_to_m if in_metres else 1.0
-    return {name: triangles * scale for name, triangles in bodies.items()}
-
-
-def parse_deflections(items: list[str]) -> dict[str, float]:
-    """Turn command-line items like ["wingtip_r=10", "wingtip_l=-5"] into {"wingtip_r": 10.0, ...}."""
-    deflections: dict[str, float] = {}
-    for item in items:
-        name, sep, value = item.partition("=")
-        if not sep:
-            raise ValueError(f"expected NAME=DEG, got {item!r}")
-        deflections[name] = float(value)
-    return deflections
+    return {name: triangles * geometry.scale_to_m for name, triangles in bodies.items()}

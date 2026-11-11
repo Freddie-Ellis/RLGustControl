@@ -1,10 +1,10 @@
 """Submit CFD cases to Slurm: one mesh job per case, then one solve job per flow condition.
 
 Run on the Iridis login node through hpc/submit_cases.sh, which loads the Python environment first:
-    bash hpc/submit_cases.sh configs/cases/uav_clean.toml              one case
+    bash hpc/submit_cases.sh configs/cases/batch1/batch1_000.toml              one case
     bash hpc/submit_cases.sh configs/cases/mesh_study                  every case file in a folder
     bash hpc/submit_cases.sh configs/cases/mesh_study --mesh-only      mesh, don't solve
-    bash hpc/submit_cases.sh configs/cases/uav_clean.toml --dry-run    show what would be submitted
+    bash hpc/submit_cases.sh configs/cases/batch1/batch1_000.toml --dry-run    show what would be submitted
 
 Everything for a case goes in hpc/runs/<case name>/ (the case file's name):
     case.toml          the case file as last submitted

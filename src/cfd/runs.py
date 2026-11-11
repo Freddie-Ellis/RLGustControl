@@ -6,7 +6,6 @@ keep in step with them (many jobs writing to one shared file at once could also 
 
     python -m src.cfd.runs                 one line per case: mesh state and how many conditions are solved
     python -m src.cfd.runs --failed        only cases whose mesh failed or has not finished
-    python -m src.cfd.runs --solves        one line per solved flow condition, with its main coefficients
 """
 
 import argparse
@@ -31,14 +30,6 @@ class RunSummary(StrictModel):
     solve_folders: int    # flow conditions submitted (solve/<condition>/ folders)
     solved: int           # ... with results.json
     converged: int        # ... of which converged
-
-
-class SolveSummary(StrictModel):
-    case: str
-    condition: str
-    converged: bool
-    iterations: int
-    coefficients: dict[str, float]  # mean over the final window
 
 
 def _read_json(path: Path) -> dict[str, object] | None:
@@ -92,23 +83,6 @@ def summarise(run_dir: Path) -> RunSummary | None:
     )
 
 
-def solve_summaries(run_dir: Path) -> list[SolveSummary]:
-    """One summary per flow condition of a case that has results."""
-    summaries: list[SolveSummary] = []
-    for folder in sorted((run_dir / "solve").glob("*")):
-        result = _read_json(folder / "results.json")
-        if result is None or not isinstance(coefficients := result.get("coefficients"), dict):
-            continue
-        summaries.append(SolveSummary(
-            case=run_dir.name,
-            condition=folder.name,
-            converged=result.get("converged") is True,
-            iterations=int(_number(result.get("iterations")) or 0),
-            coefficients={k: float(v["mean"]) for k, v in coefficients.items() if isinstance(v, dict)},
-        ))
-    return summaries
-
-
 def summarise_all(runs_dir: Path = RUNS_DIR) -> list[RunSummary]:
     if not runs_dir.is_dir():
         return []
@@ -134,28 +108,12 @@ def format_table(summaries: list[RunSummary]) -> str:
     return "\n".join(lines)
 
 
-def format_solves(summaries: list[SolveSummary]) -> str:
-    names = ("C_L", "C_D", "C_Y", "C_l", "C_m", "C_n")
-    header = f"{'case':24s} {'condition':14s} {'conv.':5s} {'iters':>5s} " + " ".join(f"{n:>8s}" for n in names)
-    lines = [header, "-" * len(header)]
-    for s in summaries:
-        values = " ".join(f"{s.coefficients.get(n, float('nan')):8.4f}" for n in names)
-        lines.append(f"{s.case:24s} {s.condition:14s} {'yes' if s.converged else 'NO':5s} {s.iterations:5d} {values}")
-    return "\n".join(lines)
-
-
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="List CFD runs and their state, from the run folders.")
     parser.add_argument("runs_dir", type=Path, nargs="?", default=RUNS_DIR)
     parser.add_argument("--failed", action="store_true", help="only runs whose mesh failed or has no report")
-    parser.add_argument("--solves", action="store_true", help="one line per solved flow condition")
     args = parser.parse_args(argv)
 
-    if args.solves:
-        rows = [row for d in sorted(args.runs_dir.iterdir()) if d.is_dir() for row in solve_summaries(d)] \
-            if args.runs_dir.is_dir() else []
-        print(format_solves(rows) if rows else f"no solved conditions in {args.runs_dir}")
-        return
     summaries = summarise_all(args.runs_dir)
     if args.failed:
         summaries = [s for s in summaries if s.mesh_status != "passed"]

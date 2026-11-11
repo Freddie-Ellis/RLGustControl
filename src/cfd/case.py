@@ -17,15 +17,16 @@ condition in [flow] on that mesh. Example:
     [flow]                                 # solved at every combination of these angles
     alpha_deg = [0.0, 10.0, 20.0]
     beta_deg = [0.0, 5.0]
+    pairs = [[10.0, -4.0]]                 # optional: extra (alpha, beta) conditions
 
 Paths are relative to the repository root, which is the working directory the HPC jobs run in.
 """
 
 import tomllib
 from pathlib import Path
-from typing import Any
+from typing import Any, Self
 
-from pydantic import Field
+from pydantic import model_validator
 
 from src.cfd.geometry import GeometryConfig, StrictModel
 
@@ -42,12 +43,21 @@ class FlowCondition(StrictModel):
 
 
 class FlowSpec(StrictModel):
-    """The flow conditions a case is solved at: every combination of the listed angles."""
-    alpha_deg: list[float] = Field(min_length=1)
+    """The flow conditions a case is solved at: every combination of alpha_deg and beta_deg, plus any
+    (alpha, beta) pairs listed in `pairs` (e.g. a sideslip sweep at one alpha). Repeats are dropped."""
+    alpha_deg: list[float] = []
     beta_deg: list[float] = [0.0]
+    pairs: list[tuple[float, float]] = []
+
+    @model_validator(mode="after")
+    def _has_conditions(self) -> Self:
+        if not self.conditions():
+            raise ValueError("[flow] gives no conditions: list alpha_deg, or pairs")
+        return self
 
     def conditions(self) -> list[FlowCondition]:
-        return [FlowCondition(alpha_deg=a, beta_deg=b) for b in self.beta_deg for a in self.alpha_deg]
+        angles = [(a, b) for b in self.beta_deg for a in self.alpha_deg] + list(self.pairs)
+        return [FlowCondition(alpha_deg=a, beta_deg=b) for a, b in dict.fromkeys(angles)]
 
 
 class CaseSpec(StrictModel):

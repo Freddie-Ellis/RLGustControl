@@ -39,8 +39,7 @@ Function objects (written to postProcessing/):
                              flow looks physical without the full 3D fields
 
 Run as a script (normally from the Slurm job, hpc/solve_case.slurm):
-    python -m src.cfd.solve conditions configs/cases/uav_clean.toml       list the case's flow conditions
-    python -m src.cfd.solve write configs/cases/uav_clean.toml hpc/runs/uav_clean/solve/a+08.0_b+00.0 \\
+    python -m src.cfd.solve configs/cases/batch1/batch1_000.toml hpc/runs/batch1_000/solve/a+08.0_b+00.0 \\
         --alpha 8 --beta 0 --n-procs 32
 """
 
@@ -49,7 +48,6 @@ import json
 import math
 import os
 import re
-import shutil
 import tomllib
 from datetime import datetime
 from pathlib import Path
@@ -140,20 +138,12 @@ def check_condition(condition: FlowCondition, mesh: MeshSettings) -> None:
 
 
 def _link_mesh(mesh_dir: Path, solve_dir: Path) -> None:
-    """Point solve_dir/constant/polyMesh at the mesh, without copying it (a relative symbolic link), or copy
-    it where links aren't allowed (e.g. Windows without developer mode)."""
+    """Point solve_dir/constant/polyMesh at the mesh with a relative symbolic link, rather than copying it."""
     source = mesh_dir / "constant" / "polyMesh"
     target = solve_dir / "constant" / "polyMesh"
     target.parent.mkdir(parents=True, exist_ok=True)
-    if target.is_symlink() or target.exists():
-        if target.is_symlink():
-            target.unlink()
-        else:
-            shutil.rmtree(target)
-    try:
-        target.symlink_to(os.path.relpath(source.resolve(), target.parent.resolve()), target_is_directory=True)
-    except OSError:
-        shutil.copytree(source, target)
+    target.unlink(missing_ok=True)
+    target.symlink_to(os.path.relpath(source.resolve(), target.parent.resolve()), target_is_directory=True)
 
 
 def _slices(mesh_dir: Path, n_x: int, n_y: int) -> str:
@@ -173,8 +163,7 @@ def _slices(mesh_dir: Path, n_x: int, n_y: int) -> str:
     ys = [lo[1] + (i + 0.5) * (hi[1] - lo[1]) / n_y + 0.5e-3 for i in range(n_y)]
     planes = [(f"x_{x * 1e3:.0f}mm", (x, 0.0, 0.0), (1, 0, 0)) for x in xs]
     planes += [(f"y_{'m' if y < 0 else 'p'}{abs(y) * 1e3:.0f}mm", (0.0, y, 0.0), (0, 1, 0)) for y in ys]
-    return "
-".join(
+    return "\n".join(
         f"            {name} {{ type cuttingPlane; planeType pointAndNormal; "
         f"pointAndNormalDict {{ point {foam_vector(point)}; normal {foam_vector(normal)}; }} "
         f"{bounds} interpolate false; }}"
@@ -499,26 +488,16 @@ relaxationFactors
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Write an OpenFOAM case that solves one flow condition.")
-    commands = parser.add_subparsers(dest="command", required=True)
-    listing = commands.add_parser("conditions", help="print the case's flow conditions: alpha beta name")
-    listing.add_argument("case_file", type=Path)
-    write = commands.add_parser("write", help="write the solve case for one flow condition")
-    write.add_argument("case_file", type=Path)
-    write.add_argument("solve_dir", type=Path)
-    write.add_argument("--alpha", type=float, required=True, help="angle of attack (deg)")
-    write.add_argument("--beta", type=float, default=0.0, help="sideslip (deg)")
-    write.add_argument("--mesh-dir", type=Path, help="the case's mesh (default hpc/runs/<case name>/mesh)")
-    write.add_argument("--n-procs", type=int, default=1)
+    parser.add_argument("case_file", type=Path)
+    parser.add_argument("solve_dir", type=Path)
+    parser.add_argument("--alpha", type=float, required=True, help="angle of attack (deg)")
+    parser.add_argument("--beta", type=float, default=0.0, help="sideslip (deg)")
+    parser.add_argument("--mesh-dir", type=Path, help="the case's mesh (default hpc/runs/<case name>/mesh)")
+    parser.add_argument("--n-procs", type=int, default=1)
     args = parser.parse_args(argv)
 
     case = CaseSpec.from_toml(args.case_file)
     mesh_settings = MeshSettings.from_toml(case.mesh, case.mesh_overrides)
-    if args.command == "conditions":
-        for condition in case.conditions():
-            check_condition(condition, mesh_settings)
-            print(condition.alpha_deg, condition.beta_deg, condition.name)
-        return
-
     if case.solver is None:
         raise SystemExit(f"{args.case_file} has no solver settings (`solver = ...`)")
     condition = FlowCondition(alpha_deg=args.alpha, beta_deg=args.beta)

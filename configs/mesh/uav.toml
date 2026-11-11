@@ -43,8 +43,8 @@ max_global_cells = 100_000_000
 # Iteration counts. Cutting them to 30 / 20 / 10 left 4 bad face tets after snapping and reduced layer
 # coverage from ~85% to ~70%.
 n_snap_solve_iter = 100
-n_layer_iter = 100   # 50 left 3 bad face tets on the fine study mesh (base 0.288); 100 cleared them
-                     # (configs/cases/mesh_tests/fine_layer_iter100). mesh_coarse and mesh_medium were made with 50.
+n_layer_iter = 100   # 50 left 3 bad face tets on the fine study mesh (base 0.288); 100 cleared them.
+                     # mesh_coarse and mesh_medium were made with 50.
 n_relaxed_layer_iter = 20
 
 # The merged skin must have no slits narrower than this (m); the case is not written if it does.

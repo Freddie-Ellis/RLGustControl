@@ -9,7 +9,8 @@
 # a given positive deflection is the same physical motion on both sides.
 #
 # Every control surface can be deflected; any surface left out of a case's deflections stays at 0.
-# TODO: confirm all deflection limits (placeholders of +/-25 deg).
+# Limits: +/-50 deg for the wingtips, leading-edge and trailing-edge flaps (the real travel); the splitters open
+# 0-90 deg (the rig limits them to 70).
 
 name = "uav"
 units = "mm"
@@ -17,10 +18,6 @@ units = "mm"
 # STLs must be exported with "Do not translate STL output data to positive space" ticked, so they are in the
 # part frame. If not, set stl_offset to the shift (STL = part + stl_offset).
 stl_offset = [0.0, 0.0, 0.0]
-
-# Small holes up to this perimeter are filled on load. The AeroGeom_Meshing export is closed (no holes); this is
-# a safety margin for the thin slits earlier exports had where the loft meets the wing (largest 13.1 mm).
-max_hole_perimeter = 20.0
 
 # Planform area and MAC are estimated from the plan-view projection of all bodies (span 650 mm,
 # root chord 520 mm). TODO: replace with the design values, and the moment reference point with the CG.
@@ -39,16 +36,16 @@ stl = "MainBody^AeroGeom_Meshing1.STL"   # coves filled so the flap noses are bu
 [[control_surfaces]]
 name = "wingtip_r"
 stl = "AeroGeom_Meshing - Wingtip^AeroGeom_Meshing-2.STL"
-min_deflection_deg = -25.0
-max_deflection_deg = 25.0
+min_deflection_deg = -50.0
+max_deflection_deg = 50.0
 hinge.p1 = [417.54, 315.07, -21.88]
 hinge.p2 = [417.54, 275.0, -21.88]
 
 [[control_surfaces]]
 name = "wingtip_l"
 stl = "AeroGeom_Meshing - MirrorWingtip^AeroGeom_Meshing-3.STL"
-min_deflection_deg = -25.0
-max_deflection_deg = 25.0
+min_deflection_deg = -50.0
+max_deflection_deg = 50.0
 hinge.p1 = [417.54, -275.0, -21.88]
 hinge.p2 = [417.54, -315.07, -21.88]
 
@@ -56,16 +53,16 @@ hinge.p2 = [417.54, -315.07, -21.88]
 [[control_surfaces]]
 name = "le_flap_r"
 stl = "AeroGeom_Meshing - LEFlap^AeroGeom_Meshing-3.STL"
-min_deflection_deg = -25.0
-max_deflection_deg = 25.0
+min_deflection_deg = -50.0
+max_deflection_deg = 50.0
 hinge.p1 = [291.16, 194.66, -15.26]
 hinge.p2 = [131.65, 74.3, -6.9]
 
 [[control_surfaces]]
 name = "le_flap_l"
 stl = "AeroGeom_Meshing - MirrorLEFlap^AeroGeom_Meshing-4.STL"
-min_deflection_deg = -25.0
-max_deflection_deg = 25.0
+min_deflection_deg = -50.0
+max_deflection_deg = 50.0
 hinge.p1 = [131.65, -74.3, -6.9]
 hinge.p2 = [291.16, -194.66, -15.26]
 
@@ -73,16 +70,16 @@ hinge.p2 = [291.16, -194.66, -15.26]
 [[control_surfaces]]
 name = "obte_flap_r"
 stl = "AeroGeom_Meshing - OBTEFlap^AeroGeom_Meshing-3.STL"
-min_deflection_deg = -25.0
-max_deflection_deg = 25.0
+min_deflection_deg = -50.0
+max_deflection_deg = 50.0
 hinge.p1 = [436.69, 230.0, -22.89]
 hinge.p2 = [436.69, 150.0, -22.89]
 
 [[control_surfaces]]
 name = "obte_flap_l"
 stl = "AeroGeom_Meshing - MirrorOBTEFlap^AeroGeom_Meshing-3.STL"
-min_deflection_deg = -25.0
-max_deflection_deg = 25.0
+min_deflection_deg = -50.0
+max_deflection_deg = 50.0
 hinge.p1 = [436.69, -150.0, -22.89]
 hinge.p2 = [436.69, -230.0, -22.89]
 
@@ -90,16 +87,16 @@ hinge.p2 = [436.69, -230.0, -22.89]
 [[control_surfaces]]
 name = "ibte_flap_r"
 stl = "AeroGeom_Meshing - IBTEFlap^AeroGeom_Meshing-3.STL"
-min_deflection_deg = -25.0
-max_deflection_deg = 25.0
+min_deflection_deg = -50.0
+max_deflection_deg = 50.0
 hinge.p1 = [450.67, 130.0, -23.62]
 hinge.p2 = [450.67, 50.0, -23.62]
 
 [[control_surfaces]]
 name = "ibte_flap_l"
 stl = "AeroGeom_Meshing - MirrorIBTEFlap^AeroGeom_Meshing-3.STL"
-min_deflection_deg = -25.0
-max_deflection_deg = 25.0
+min_deflection_deg = -50.0
+max_deflection_deg = 50.0
 hinge.p1 = [450.67, -50.0, -23.62]
 hinge.p2 = [450.67, -130.0, -23.62]
 

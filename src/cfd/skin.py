@@ -21,23 +21,16 @@ For this to work, bodies must overlap or share flat faces. Two separately triang
 curved surface (a flap nose in a zero-clearance cove) weave through each other by up to the STL export
 deviation, and the union then keeps slivers of both. `check_skin` finds such problems, and any other narrow
 slit, so they can be fixed in the CAD model rather than patched here.
-
-Run as a script to write the skin and check it, e.g.:
-    uv run python -m src.cfd.skin cad/uav/geometry.toml out/skin_zero_mm.stl --cad-units
 """
 
-import argparse
 import math
 from dataclasses import dataclass
-from pathlib import Path
 
 import manifold3d
 import numpy as np
 import torch
 
-from src.cfd.deflect import deflected_bodies, parse_deflections
-from src.cfd.geometry import GeometryConfig
-from src.cfd.stl import Triangles, facet_normals, write_ascii_stl, write_obj_edges
+from src.cfd.stl import Triangles, facet_normals
 from src.cfd.surface import directed_edges, open_edge_count, weld
 
 
@@ -197,8 +190,8 @@ def narrow_gap_faces(skin: dict[str, Triangles], min_gap: float) -> dict[str, Tr
     return found
 
 
-def check_skin(skin: dict[str, Triangles], min_gap: float) -> tuple[list[str], dict[str, Triangles]]:
-    """Problems with the skin that would spoil the mesh, as messages (empty if none), and the narrow-gap faces.
+def check_skin(skin: dict[str, Triangles], min_gap: float) -> list[str]:
+    """Problems with the skin that would spoil the mesh, as messages (empty if none).
 
     Checks that the skin is closed (snappyHexMesh would mesh the inside of the aircraft through any hole) and
     that no part of it faces another across a gap narrower than `min_gap` (see narrow_gap_faces). A body's
@@ -220,42 +213,4 @@ def check_skin(skin: dict[str, Triangles], min_gap: float) -> tuple[list[str], d
         hi = [round(x, 4) for x in corners.max(dim=0).values.tolist()]
         problems.append(f"{name}: {len(faces_found)} faces ({area:.3g} area) face the skin across a gap "
                         f"narrower than {min_gap:g}, within box {lo} to {hi}")
-    return problems, narrow
-
-
-def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description="Write the aircraft's outer skin as one STL and check it.")
-    parser.add_argument("geometry", type=Path, help="path to geometry.toml")
-    parser.add_argument("out_file", type=Path, help="STL file to write (a named solid per body)")
-    parser.add_argument("-d", "--deflect", nargs="*", default=[], metavar="NAME=DEG",
-                        help="control surface deflections in degrees; unlisted surfaces stay at 0")
-    parser.add_argument("--cad-units", action="store_true",
-                        help="write in the model's units (e.g. mm) instead of metres, to overlay on the CAD model")
-    parser.add_argument("--min-gap", type=float, default=0.1,
-                        help="report gaps narrower than this, in mm (default 0.1)")
-    parser.add_argument("--feature-angle", type=float, default=30.0,
-                        help="sharp edges turn by more than this, in degrees (default 30)")
-    args = parser.parse_args(argv)
-
-    geometry = GeometryConfig.from_toml(args.geometry)
-    deflections = parse_deflections(args.deflect)
-    bodies = deflected_bodies(geometry, deflections, in_metres=not args.cad_units)
-    skin = outer_skin(bodies)
-    write_ascii_stl(args.out_file, skin.patches)
-    features_file = args.out_file.with_name(args.out_file.stem + "_features.obj")
-    write_obj_edges(features_file, skin.feature_edges(args.feature_angle))
-    print(f"wrote {args.out_file} with deflections {deflections or 'all zero'}, and its sharp edges to {features_file}")
-
-    min_gap = args.min_gap * 1e-3 / (geometry.scale_to_m if args.cad_units else 1.0)  # mm -> output units
-    problems, narrow = check_skin(skin.patches, min_gap)
-    if problems and narrow:
-        narrow_file = args.out_file.with_name(args.out_file.stem + "_narrow_gaps.stl")
-        write_ascii_stl(narrow_file, narrow)
-        print(f"wrote the narrow-gap faces to {narrow_file}")
-    print("\n".join(["FAILED:"] + problems) if problems else "OK: skin is closed and has no narrow gaps")
-    if problems:
-        raise SystemExit(1)
-
-
-if __name__ == "__main__":
-    main()
+    return problems

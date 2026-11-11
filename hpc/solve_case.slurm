@@ -50,7 +50,7 @@ fi
 
 echo
 echo "=== Case setup ==="
-python -m src.cfd.solve write "${case_file}" "${solve_dir}" --alpha "${alpha}" --beta "${beta}" \
+python -m src.cfd.solve "${case_file}" "${solve_dir}" --alpha "${alpha}" --beta "${beta}" \
     --mesh-dir "${mesh_dir}" --n-procs "${SLURM_NTASKS}"
 cd "${solve_dir}"
 

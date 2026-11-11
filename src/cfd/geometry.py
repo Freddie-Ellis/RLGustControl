@@ -98,10 +98,6 @@ class GeometryConfig(StrictModel):
     # load so that the hinge points, which are measured in the model frame, still line up.
     stl_offset: Vec3 = (0.0, 0.0, 0.0)
 
-    # Holes in an STL with a perimeter up to this length (in `units`) are filled on load; any larger hole is
-    # an error. 0 means every STL must already be closed. See `surface.close_surface`.
-    max_hole_perimeter: float = Field(default=0.0, ge=0)
-
     fixed_bodies: list[Body] = Field(min_length=1)
     control_surfaces: list[ControlSurface] = []
 

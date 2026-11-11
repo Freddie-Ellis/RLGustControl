@@ -2,10 +2,10 @@
 # Submit CFD cases on the Iridis login node: a mesh job per case, then a solve job per flow condition.
 # All the logic is in src/cfd/submit.py; this loads the Python environment and runs it from the repo root.
 #
-#     bash hpc/submit_cases.sh configs/cases/uav_clean.toml              one case
+#     bash hpc/submit_cases.sh configs/cases/batch1/batch1_000.toml              one case
 #     bash hpc/submit_cases.sh configs/cases/mesh_study                  every case file in a folder
 #     bash hpc/submit_cases.sh configs/cases/mesh_study --mesh-only      mesh only
-#     bash hpc/submit_cases.sh configs/cases/uav_clean.toml --dry-run    show what would be submitted
+#     bash hpc/submit_cases.sh configs/cases/batch1/batch1_000.toml --dry-run    show what would be submitted
 # Options: --mesh-only, --dry-run, --mesh-time HH:MM:SS, --solve-time HH:MM:SS.
 
 set -euo pipefail

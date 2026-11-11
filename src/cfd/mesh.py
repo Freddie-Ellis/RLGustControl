@@ -27,7 +27,7 @@ see skin.py), so that faces hidden between bodies don't trigger refinement along
 first (closed, no slits narrower than skin_min_gap) and the case is not written if it fails.
 
 Run as a script (normally from the Slurm job), with a case file from configs/cases/:
-    python -m src.cfd.mesh configs/cases/uav_wingtip_10.toml hpc/runs/uav_wingtip_10/mesh --n-procs 32
+    python -m src.cfd.mesh configs/cases/batch1/batch1_036.toml hpc/runs/batch1_036/mesh --n-procs 32
 """
 
 import argparse
@@ -38,7 +38,7 @@ import shutil
 import tomllib
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 import torch
 from pydantic import Field
@@ -102,10 +102,6 @@ class MeshSettings(StrictModel):
     layer_expansion_ratio: float = 1.2
     final_layer_thickness: float = 0.5
     min_layer_thickness: float = 0.1
-    n_grow: int = Field(default=0, ge=0)  # where layers collapse, also stop them over this many rings of faces
-    # How snappyHexMesh moves the mesh aside for the layers: "medial_axis" (its default) or "displacement"
-    # (displacementMotionSolver, a Laplacian solve: slower, often better coverage on curves and junctions).
-    layer_shrinker: Literal["medial_axis", "displacement"] = "medial_axis"
 
     # Iteration counts. More iterations rarely improve the result once it settles, but cost run time.
     n_snap_solve_iter: int = 100     # snapping: mesh-displacement smoothing iterations (nSolveIter)
@@ -194,7 +190,7 @@ def write_mesh_case(
     s = settings
     bodies = deflected_bodies(geometry, deflections_deg)  # metres, each body closed
     skin = outer_skin(bodies)
-    problems, _ = check_skin(skin.patches, s.skin_min_gap)
+    problems = check_skin(skin.patches, s.skin_min_gap)
     if problems:
         raise ValueError("the aircraft's skin is not fit to mesh (fix the CAD model):\n" + "\n".join(problems))
     write_ascii_stl(case_dir / "constant" / "triSurface" / f"{SURFACE}.stl", skin.patches)
@@ -227,10 +223,6 @@ def write_mesh_case(
     fixed_names = [b.name for b in geometry.fixed_bodies]
     surface_names = [c.name for c in geometry.control_surfaces]
     wall_regex = "(" + "|".join(bodies) + ")"
-    shrinker = "" if s.layer_shrinker == "medial_axis" else f"""
-    meshShrinker        displacementMotionSolver;
-    solver              displacementLaplacian;
-    displacementLaplacianCoeffs {{ diffusivity quadratic inverseDistance ({" ".join(bodies)}); }}"""
 
     # Background mesh: one block of uniform hex cells. All six faces form one far-field patch, "freestream":
     # the solver's freestream conditions make each part of it an inlet or an outlet depending on whether the
@@ -351,7 +343,7 @@ addLayersControls
     expansionRatio      {s.layer_expansion_ratio:g};
     finalLayerThickness {s.final_layer_thickness:g};
     minThickness        {s.min_layer_thickness:g};
-    nGrow               {s.n_grow};
+    nGrow               0;
     featureAngle        130;
     slipFeatureAngle    30;
     nRelaxIter          5;
@@ -363,7 +355,7 @@ addLayersControls
     minMedialAxisAngle  90;
     nBufferCellsNoExtrude 0;
     nLayerIter          {s.n_layer_iter};
-    nRelaxedIter        {s.n_relaxed_layer_iter};{shrinker}
+    nRelaxedIter        {s.n_relaxed_layer_iter};
 }}
 
 meshQualityControls
@@ -374,7 +366,6 @@ meshQualityControls
     relaxed {{ maxNonOrtho {s.acceptance.max_non_orthogonality:g}; }}
 }}
 
-writeFlags (scalarLevels layerSets layerFields);
 mergeTolerance 1e-6;
 debug 0;
 """)
@@ -417,9 +408,7 @@ functions
         libs            (sampling);
         surfaceFormat   vtk;
         interpolationScheme cell;
-        // nSurfaceLayers and thicknessFraction (achieved / requested layer thickness) are snappyHexMesh's
-        // layer fields, only non-zero on the walls; fields that are missing are skipped.
-        fields          (cellVolume cellAspectRatio nonOrthoAngle skewness cellShapes nSurfaceLayers thicknessFraction);
+        fields          (cellVolume cellAspectRatio nonOrthoAngle skewness cellShapes);
         surfaces
         {{
 {planes}
@@ -454,10 +443,7 @@ interpolationSchemes { default linear; }
 snGradSchemes        { default corrected; }
 wallDist             { method meshWave; }
 """)
-    # The displacement layer shrinker solves for the mesh motion, so it needs a linear solver for it.
-    displacement_solver = ("cellDisplacement { solver GAMG; smoother GaussSeidel; tolerance 1e-6; relTol 0.01; }"
-                           if s.layer_shrinker == "displacement" else "")
-    write_foam_file(case_dir, "system/fvSolution", f"solvers {{ {displacement_solver} }}")
+    write_foam_file(case_dir, "system/fvSolution", "solvers {}")
     write_foam_file(case_dir, "system/decomposeParDict", f"numberOfSubdomains {n_procs};\nmethod scotch;")
 
     info: dict[str, object] = {

@@ -73,6 +73,18 @@ def keep_previous(folder: Path) -> None:
         folder.rename(previous)
 
 
+NODE_CORES = 192        # an Iridis 6 batch node (2 x AMD EPYC 9654); the jobs run on a single node
+MIN_MEMORY_GB = 48      # the scripts' own request, enough for the fine mesh-study mesh on 32 cores
+MEMORY_PER_CORE_GB = 2  # each MPI rank adds its own overhead on top of the mesh itself
+
+
+def core_args(cores: int | None) -> list[str]:
+    """sbatch options for `cores` MPI ranks (none: keep the script's #SBATCH values), with memory to match."""
+    if cores is None:
+        return []
+    return [f"--ntasks={cores}", f"--mem={max(MIN_MEMORY_GB, MEMORY_PER_CORE_GB * cores)}G"]
+
+
 class Submitter:
     def __init__(self, dry_run: bool, mesh_args: list[str], solve_args: list[str]) -> None:
         self.dry_run = dry_run
@@ -150,7 +162,12 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--dry-run", action="store_true", help="print what would be submitted, submit nothing")
     parser.add_argument("--mesh-time", help="time limit for mesh jobs, e.g. 04:00:00")
     parser.add_argument("--solve-time", help="time limit for solve jobs, e.g. 08:00:00")
+    parser.add_argument("--mesh-cores", type=int, help="cores (MPI ranks) per mesh job, at most one node (192)")
+    parser.add_argument("--solve-cores", type=int, help="cores (MPI ranks) per solve job, at most one node (192)")
     args = parser.parse_args(argv)
+    for cores in (args.mesh_cores, args.solve_cores):
+        if cores is not None and not 1 <= cores <= NODE_CORES:
+            raise SystemExit(f"cores must be 1 to {NODE_CORES} (one node): got {cores}")
 
     case_files = sorted(args.target.glob("*.toml")) if args.target.is_dir() else [args.target]
     if not case_files:
@@ -162,8 +179,8 @@ def main(argv: list[str] | None = None) -> None:
 
     submitter = Submitter(
         dry_run=args.dry_run,
-        mesh_args=[f"--time={args.mesh_time}"] if args.mesh_time else [],
-        solve_args=[f"--time={args.solve_time}"] if args.solve_time else [],
+        mesh_args=([f"--time={args.mesh_time}"] if args.mesh_time else []) + core_args(args.mesh_cores),
+        solve_args=([f"--time={args.solve_time}"] if args.solve_time else []) + core_args(args.solve_cores),
     )
     for case_file in case_files:
         submitter.submit_case(case_file, args.mesh_only)

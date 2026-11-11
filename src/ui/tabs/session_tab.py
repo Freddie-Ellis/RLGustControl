@@ -1,6 +1,11 @@
 """Live view of an actor + learner session, read from their shared folder (picked by session name).
 
-Left, one point per episode (x = episode): return, control loop timing, and which weight version the actor used.
+Top: what the session runs, then the health of its three parts: the rig (safety trips, missed control ticks, DAQ
+samples per tick, how often the safety layer overrode the policy), the learner (alive?, backlog, replay buffer) and
+the link to the HPC.
+Left, one point per episode (x = episode): return (a red cross marks an episode a safety trip ended), Cm rms of the
+eval episodes against the neutral-surface baseline episodes, control loop timing, and which
+weight version the actor used.
 Right: the latest episode in detail (Cm over time, every tap pressure and surface command as heatmaps) and the learner's metrics.
 Everything comes from files the actor and learner already write, so it works for a session on another machine too.
 With the learner on the HPC, "Launch sync" mirrors the folder with the HPC's copy (see src/ml/distributed/sync.py).
@@ -37,7 +42,7 @@ from src.ml.distributed.files import (
     read_config,
     stop_path,
 )
-from src.ml.distributed.session import EpisodeSummary, SessionReader
+from src.ml.distributed.session import EpisodeKind, EpisodeSummary, SessionReader
 from src.ml.run_config import RunConfig
 from src.ui.utils.dynamic_vb import DynamicViewBox
 from src.ui.utils.logger import RED, Readout, TelemetryConsole
@@ -48,7 +53,10 @@ KIND_STYLE: dict[str, tuple[tuple[int, int, int], int]] = {  # colour, marker si
     "warmup": ((140, 140, 140), 5),
     "train": ((80, 170, 240), 5),
     "eval": ((255, 190, 60), 9),
+    "baseline": ((235, 235, 235), 7),
 }
+TRIP_COLOUR = (255, 80, 80)
+CM_KINDS: tuple[EpisodeKind, ...] = ("train", "eval", "baseline")  # drawn on the Cm rms panel
 GOOD, BAD, IDLE = "#4caf50", "#e57373", "#9e9e9e"
 NO_CONFIG = "choose…"
 
@@ -61,6 +69,7 @@ class SessionTab(QWidget):
     def __init__(self) -> None:
         super().__init__()
         self.reader: SessionReader | None = None
+        self._launched: dict[str, Path] = {}  # console name -> the session folder its process was launched on
 
         # --- top: session + status + stop ---
         self.session = QComboBox()
@@ -111,19 +120,54 @@ class SessionTab(QWidget):
             status.addSpacing(24)
         status.addStretch()
 
+        self.rig_health = QLabel("")  # the three parts a session can fail in, each with its own dot
+        self.rig_health.setToolTip(
+            "Rate limit: the safety layer lets a command move at most safety.max_rate * dt per step (0.2 of the "
+            "-1..1 range at the defaults).\nAn exploring policy draws fresh noise every step, so most of its "
+            "commands ask for a bigger jump than that and are held back: expect a high share on train episodes "
+            "and a low one on eval episodes.\nThe amount is the mean gap between what was asked and what was "
+            "sent, in the same -1..1 units."
+        )
+        self.learner_health = QLabel("")
+        self.sync_health = QLabel("")
+        health = QHBoxLayout()
+        for lbl in (self.rig_health, self.learner_health, self.sync_health):
+            lbl.setTextFormat(Qt.TextFormat.RichText)
+            health.addWidget(lbl)
+            health.addSpacing(24)
+        health.addStretch()
+
         # --- left: per-episode plots, x-linked ---
         self.episode_plots = pg.GraphicsLayoutWidget()
         self.p_ret = self._plot(self.episode_plots, 0, "return")
         self.p_ret.addLegend(offset=(-10, 10))
-        self.p_dt = self._plot(self.episode_plots, 1, "loop period [ms]")
-        self.p_ver = self._plot(self.episode_plots, 2, "weights version")
+        self.p_cm_rms = self._plot(self.episode_plots, 1, "Cm rms")
+        self.p_cm_rms.addLegend(offset=(-10, 10))
+        self.p_dt = self._plot(self.episode_plots, 2, "loop period [ms]")
+        self.p_ver = self._plot(self.episode_plots, 3, "weights version")
         self.p_ver.setLabel("bottom", "episode")
-        for p in (self.p_dt, self.p_ver):
+        for p in (self.p_cm_rms, self.p_dt, self.p_ver):
             p.setXLink(self.p_ret)
         self.ret_items = {
             kind: self.p_ret.plot([], [], pen=None, symbol="o", symbolSize=size, symbolPen=None,
                                   symbolBrush=pg.mkBrush(*colour), name=kind)
             for kind, (colour, size) in KIND_STYLE.items()
+        }
+        self.trip_marks = self.p_ret.plot([], [], pen=None, symbol="x", symbolSize=12, symbolBrush=None,
+                                          symbolPen=pg.mkPen(TRIP_COLOUR, width=2), name="safety trip")
+        # Cm rms: training episodes as faint points; eval (the policy) as a solid line and baseline (surfaces at
+        # neutral) as a dashed one. Eval below baseline = the policy is suppressing Cm.
+        self.cm_items: dict[EpisodeKind, pg.PlotDataItem] = {
+            "train": self.p_cm_rms.plot([], [], pen=None, symbol="o", symbolSize=3, symbolPen=None,
+                                        symbolBrush=pg.mkBrush(80, 170, 240, 90), name="train"),
+            "eval": self.p_cm_rms.plot(
+                [], [], pen=pg.mkPen(KIND_STYLE["eval"][0], width=1.5), symbol="o", symbolSize=7, symbolPen=None,
+                symbolBrush=pg.mkBrush(*KIND_STYLE["eval"][0]), name="eval",
+            ),
+            "baseline": self.p_cm_rms.plot(
+                [], [], pen=pg.mkPen(KIND_STYLE["baseline"][0], width=1.5, style=Qt.PenStyle.DashLine), symbol="s",
+                symbolSize=7, symbolPen=None, symbolBrush=pg.mkBrush(*KIND_STYLE["baseline"][0]), name="baseline",
+            ),
         }
         self.dt_mean = self.p_dt.plot([], [], pen=None, symbol="o", symbolSize=4, symbolPen=None,
                                       symbolBrush=pg.mkBrush(80, 170, 240), name="mean")
@@ -169,9 +213,18 @@ class SessionTab(QWidget):
         self.taps_mode.addItems(["fluctuation", "absolute"])
         self.taps_mode.currentTextChanged.connect(lambda _: self.reader is not None and self._draw_latest())
         detail_row = QHBoxLayout()
+        self.command_mode = QComboBox()
+        self.command_mode.addItems(["applied", "requested"])
+        self.command_mode.setToolTip(
+            "applied: what the surfaces were sent, after the safety layer's rate limit and clamp\n"
+            "requested: what the policy asked for"
+        )
+        self.command_mode.currentTextChanged.connect(lambda _: self.reader is not None and self._draw_latest())
         detail_row.addWidget(self.latest_title, 1)
         detail_row.addWidget(QLabel("Pressures"))
         detail_row.addWidget(self.taps_mode)
+        detail_row.addWidget(QLabel("Commands"))
+        detail_row.addWidget(self.command_mode)
 
         self.learner_metric = QComboBox()
         self.learner_metric.currentTextChanged.connect(lambda _: self._draw_learner())
@@ -207,6 +260,7 @@ class SessionTab(QWidget):
         layout = QVBoxLayout(self)
         layout.addLayout(top)
         layout.addLayout(status)
+        layout.addLayout(health)
         layout.addWidget(split, 1)
 
         self._show_session_folders()
@@ -240,6 +294,7 @@ class SessionTab(QWidget):
             self.learner_console.system(str(e), RED)
             return
         self.learner_console.system(f"session {shared.name} runs {cfg.describe()}")
+        self._launched[self.learner_console.name] = shared
         self.learner_console.run(
             learner.run_learner, cfg, shared, cwd=str(ROOT), profile_to=self._profile_path("learner")
         )
@@ -270,12 +325,14 @@ class SessionTab(QWidget):
             )
             return
         self.actor_console.system(f"session {shared.name} runs {cfg.describe()}")
+        self._launched[self.actor_console.name] = shared
         self.actor_console.run(actor.run_actor, shared, cwd=str(ROOT), profile_to=self._profile_path("actor"))
 
     def _launch_sync(self) -> None:
         """Mirror the session's folder with its HPC copy, with sync.py's settings, until the session ends."""
         shared = self._shared_for(self.sync_console)  # a stale STOP here would be sent up and stop the HPC learner
         if shared is not None:
+            self._launched[self.sync_console.name] = shared
             self.sync_console.run(sync.run_sync, shared.name, host=sync.HOST, cwd=str(ROOT))
 
     def _profile_path(self, name: str) -> Path | None:
@@ -341,18 +398,12 @@ class SessionTab(QWidget):
                 self.config.setCurrentIndex(-1)
             self.config.setPlaceholderText(NO_CONFIG)
         else:
-            match = next((i for i in range(self.config.count()) if self._config_file_holds(i, cfg)), -1)
+            files = [CONFIG.configs_dir / f"{self.config.itemText(i)}.toml" for i in range(self.config.count())]
+            match = next((i for i, f in enumerate(files) if learner.config_file_holds(f, cfg)), -1)
             self.config.setCurrentIndex(match)
             self.config.setPlaceholderText(f"{cfg.name} (session's own copy)")
         self.config.blockSignals(False)
         self._shown_config = cfg
-
-    def _config_file_holds(self, index: int, cfg: RunConfig) -> bool:
-        try:
-            on_disk = RunConfig.from_toml(CONFIG.configs_dir / f"{self.config.itemText(index)}.toml")
-        except (OSError, ValueError):
-            return False
-        return on_disk.model_dump() == cfg.model_dump()
 
     def _show_session_folders(self) -> None:
         """Tooltips say which folders the session name maps to, so it is clear what the sync links up."""
@@ -374,6 +425,18 @@ class SessionTab(QWidget):
         if shared is None:
             console.system(f"{self.session.currentText()!r} is not a valid session name", RED)
             return None
+        if console.is_running():  # one process per console: say which session it is on, and how to free it
+            on = self._launched.get(console.name)
+            where = f"session {on.name}" if on is not None else "another session"
+            same = on == shared
+            console.system(
+                f"the {console.name.lower()} is already running on {where}"
+                + ("" if same else f", so it was NOT started on {shared.name}. To stop it: choose session "
+                   f"{on.name if on is not None else '(its own)'}, Watch, Stop session. Then launch it on "
+                   f"{shared.name}"),
+                RED,
+            )
+            return None
         if stop_path(shared).exists():  # it would exit straight away
             console.system(f"STOP is set in {shared}: clear it first", RED)
             return None
@@ -394,7 +457,8 @@ class SessionTab(QWidget):
         answer = QMessageBox.question(self, "Session running", f"Stop the {names} and close?")
         if answer != QMessageBox.StandardButton.Yes:
             return False
-        if (shared := self._local_folder()) is not None:
+        # STOP goes to the folders the processes were launched on, which need not be the one named in the box now.
+        for shared in {self._launched[c.name] for c in running if c.name in self._launched}:
             stop_path(shared).touch()
         for console in running:
             if not console.wait(STOP_WAIT_MS):
@@ -410,6 +474,9 @@ class SessionTab(QWidget):
         self.reader = SessionReader(shared)
         self.stop_btn.setEnabled(True)
         self.learner_metric.clear()
+        self._draw_episodes()  # clears what the last session left on the plots
+        for label in (self.rig_health, self.learner_health, self.sync_health):
+            label.setText("")
         self._tick()
 
     # ----- updates -----
@@ -432,23 +499,23 @@ class SessionTab(QWidget):
         if r.cfg is None:
             self.actor_status.setText(_dot(IDLE, f"Waiting for config.json in {r.shared}"))
             return
-        since = r.seconds_since_last_episode()
-        expected = r.episode_seconds() or 0.0
-        if r.stop_requested():
+        state, since = r.actor_state()
+        if state == "stopping":
             actor = _dot(BAD, "Actor: STOP requested")
         elif since is None:
             actor = _dot(IDLE, "Actor: no episodes yet")
-        elif since < 2 * expected + 5:
+        elif state == "running":
             actor = _dot(GOOD, f"Actor: running, last episode {since:.0f} s ago")
         else:
             actor = _dot(IDLE, f"Actor: idle, last episode {since / 60:.1f} min ago")
         self.actor_status.setText(actor)
 
-        status = r.learner_status()
+        lh = r.learner_health()
         version = r.latest_version()
-        state = status.state if status else "not found"
-        colour = GOOD if state == "running" else (BAD if state == "failed" else IDLE)
-        self.learner_status.setText(_dot(colour, f"Learner: {state}, weights v{version if version else 0}"))
+        colour = GOOD if lh.state == "running" else (BAD if lh.state in ("failed", "silent") else IDLE)
+        where = " (HPC)" if lh.elsewhere else ""
+        self.learner_status.setText(_dot(colour, f"Learner{where}: {lh.state}, weights v{version if version else 0}"))
+        self._draw_health()
 
         warm = r.warmup_transitions
         warm_text = "" if warm is None else (
@@ -457,6 +524,59 @@ class SessionTab(QWidget):
         self.progress.setText(f"{len(r.episodes)} episodes · {r.transitions} transitions · {warm_text}")
         self.stop_btn.setText("Clear STOP" if r.stop_requested() else "Stop session")
 
+    def _draw_health(self) -> None:
+        """The rig, the learner and the HPC link, each on its own: green while there is nothing to look at."""
+        r = self.reader
+        assert r is not None
+        h = r.health()
+        rig = [f"trips {h.trips}" + (f" ({h.sensor_faults} sensor fault)" if h.sensor_faults else ""),
+               f"missed ticks {h.missed_ticks}"]
+        if h.last_late_ms is not None:
+            rig.append(f"worst late {h.last_late_ms:.2f} ms")
+        if h.last_samples_min is not None:
+            expected = r.expected_samples_per_tick()
+            rig.append(f"DAQ min {h.last_samples_min:.0f}" + (f"/{expected:.0f}" if expected else "") + " per tick")
+        if h.last_limited_frac is not None:
+            gap = "" if h.last_limit_gap is None else f", by {h.last_limit_gap:.2f} on average"
+            rig.append(f"rate limit held back {100 * h.last_limited_frac:.0f}% of commands{gap}")
+        rig_bad = h.trips > 0 or h.missed_ticks > 0 or h.last_samples_min == 0
+        self.rig_health.setText(_dot(BAD if rig_bad else GOOD, "Rig: " + " · ".join(rig)) if r.episodes else "")
+
+        lh = r.learner_health()
+        parts: list[str] = []
+        if lh.heartbeat_age_s is not None:
+            parts.append(f"heard {lh.heartbeat_age_s:.0f} s ago")
+        if lh.backlog is not None:
+            parts.append(f"backlog {lh.backlog:.0f} updates")
+        if lh.buffer is not None and lh.buffer_capacity:
+            parts.append(f"buffer {lh.buffer:,.0f} / {lh.buffer_capacity:,.0f}")
+        if lh.skipped_episodes:
+            parts.append(f"REFUSED {lh.skipped_episodes:.0f} episode(s): values not numbers")
+        if lh.error:
+            parts.append(lh.error)
+        learner_bad = lh.state in ("failed", "silent") or bool(lh.skipped_episodes)
+        self.learner_health.setText(
+            _dot(BAD if learner_bad else GOOD, "Learner: " + " · ".join(parts)) if parts else ""
+        )
+
+        # Only worth a line when the learner is on the HPC or a sync is running here.
+        status = r.sync_status()
+        if status is None or not (lh.elsewhere or self.sync_console.is_running()):
+            self.sync_health.setText("")
+        elif status.error is not None:
+            age = r.sync_age_s()
+            reached = "never reached the HPC" if age is None else f"last reached the HPC {age:.0f} s ago"
+            self.sync_health.setText(_dot(BAD, f"Sync: failing, {reached} ({status.error})"))
+        else:
+            running = self.sync_console.is_running()
+            text = f"Sync: reached the HPC {r.sync_age_s() or 0.0:.0f} s ago" + ("" if running else " (not running)")
+            self.sync_health.setText(_dot(GOOD if running else IDLE, text))
+
+    def _draw_cm_rms(self, eps: list[EpisodeSummary]) -> None:
+        for kind in CM_KINDS:
+            pts = [e for e in eps if e.kind == kind and e.cm_rms is not None]
+            self.cm_items[kind].setData([e.episode_id for e in pts], [e.cm_rms for e in pts])
+
     def _draw_episodes(self) -> None:
         r = self.reader
         assert r is not None
@@ -464,6 +584,9 @@ class SessionTab(QWidget):
         for kind, item in self.ret_items.items():
             pts = [e for e in eps if e.kind == kind]
             item.setData([e.episode_id for e in pts], [e.ret for e in pts])
+        tripped = [e for e in eps if e.terminated]
+        self.trip_marks.setData([e.episode_id for e in tripped], [e.ret for e in tripped])
+        self._draw_cm_rms(eps)
         ids = np.array([e.episode_id for e in eps], dtype=float)
         self.dt_mean.setData(ids, [1000 * e.dt_mean for e in eps])
         self.dt_max.setData(ids, [1000 * e.dt_max for e in eps])
@@ -484,8 +607,8 @@ class SessionTab(QWidget):
             return
         summary: EpisodeSummary = r.episodes[-1]
         parts = [f"Latest episode #{d.meta.episode_id}", summary.kind, f"weights v{d.meta.policy_version}"]
-        if summary.turbulence is not None:
-            parts.append(f"turbulence {summary.turbulence:.2f}°")
+        if summary.terminated:
+            parts.append(f"SAFETY TRIP at step {d.meta.n_steps}")
         if summary.cm_rms is not None:
             parts.append(f"Cm rms {summary.cm_rms:.4f}")
         parts.append(f"return {summary.ret:.1f}")
@@ -499,7 +622,9 @@ class SessionTab(QWidget):
             if trip is not None:
                 line.setValue(sign * trip)
 
-        act = d.act.numpy()  # [T, surfaces]; ImageItem's first axis is x, so time runs along x
+        applied = self.command_mode.currentText() == "applied" and d.applied is not None
+        # [T, surfaces]; ImageItem's first axis is x, so time runs along x
+        act = (d.applied if applied and d.applied is not None else d.act).numpy()
         self.act_image.setImage(act, levels=(-1.0, 1.0), autoLevels=False)
         dt = float(d.t[0]) if len(d.t) else 1.0
         self.act_image.setRect(QRectF(0.0, 0.0, act.shape[0] * dt, act.shape[1]))

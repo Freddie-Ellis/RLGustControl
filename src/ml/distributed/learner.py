@@ -10,8 +10,13 @@ Runs on the laptop (GPU if available). Never talks to the actor directly, only t
 
     outbox/ep_*.parquet  --ingest-->  replay buffer  --SAC.update-->  policy  --publish-->  weights/policy_v*.pt
 
-Learning is tied to data: each env step received earns `updates_per_step` SAC updates. While the tunnel resets and
-nothing arrives, the learner waits instead of re-fitting the same buffer over and over (which overfits).
+Learning is tied to data: each env step received after the warmup earns `updates_per_step` SAC updates. While the
+tunnel resets and nothing arrives, the learner waits instead of re-fitting the same buffer over and over (which
+overfits).
+
+It never trusts what it is given or what it has made: an episode with a value that is not a number is left out of
+the buffer, and weights that are not numbers are never published (the learner stops as failed instead, and the
+last good state stays on disk to carry on from).
 
 Restart-safe: on start it re-reads every episode already in the outbox and carries on from the last saved learner
 state (policy, critics, alpha, optimisers, update count), so stopping the laptop loses no tunnel data and no learning
@@ -20,20 +25,22 @@ resumed session keeps one run directory and one metrics.csv.
 """
 
 import math
+import signal
 import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from types import FrameType
 
 import torch
 
 from src.config import CONFIG
 from src.ml.algos.replay import ReplayBuffer
 from src.ml.algos.sac import SAC
+from src.ml.atomic import atomic_write_text
 from src.ml.distributed.files import (
     SESSION,
-    atomic_write_text,
     config_path,
     frame_to_transitions,
     init_shared,
@@ -42,6 +49,7 @@ from src.ml.distributed.files import (
     learner_run_dir,
     learner_run_path,
     new_episodes,
+    prune_weights,
     read_config,
     read_episode,
     read_learner_state,
@@ -51,11 +59,12 @@ from src.ml.distributed.files import (
     write_weights,
 )
 from src.ml.run_config import RunConfig, SACConfig
-from src.ml.runs import RunDir, make_env, make_policy
+from src.ml.runs import RunDir, env_dims, make_policy
 
 UPDATE_CHUNK = 50  # updates between checks for new episodes / STOP
 UPDATE_METRICS = ("critic_loss", "actor_loss", "alpha", "entropy", "q_mean")  # what SAC.update reports
 IDLE_SLEEP_S = 0.2  # wait when there is no data and no update budget
+HEARTBEAT_S = 2.0  # how often the run's status says "still alive" (and how far the learner has got)
 WAITING_REMINDER_S = 60.0  # while idle, say so this often, so a quiet log reads as "waiting", not "hung"
 
 
@@ -67,7 +76,7 @@ class Learner:
         self.run_dir = run
 
         # Building the env only reads its dimensions; a wind tunnel env opens no hardware until reset().
-        env = make_env(cfg, n_envs=1)
+        env = env_dims(cfg)
         self.priv_dim = env.priv_dim if self.algo_cfg.critic_privileged else 0
         self.policy = make_policy(cfg)
         self.sac = SAC(self.algo_cfg)
@@ -93,7 +102,11 @@ class Learner:
 
         self.seen: set[str] = set()
         self.env_steps = 0  # control steps received (each gives n_envs transitions); earns update budget
+        self.warmup_steps = 0  # those of them that arrived before the warmup data was in: they earn no updates
         self.transitions = 0  # rows received; warmup is counted in these, as in SAC.train
+        self.skipped = 0  # episodes left out because they held a value that is not a number
+        self.status = run.read_status()  # kept here and written from here: the heartbeat and the run's progress
+        self._last_beat = 0.0
         self._since_log: dict[str, list[float]] = {}  # metrics accumulated since the last log row
         # Data the run's metrics already cover: a resumed session's run directory has rows up to here, so re-reading
         # its outbox on start only logs what came after (see ingest).
@@ -112,9 +125,17 @@ class Learner:
         for path in parquets:
             meta, frame = read_episode(path)
             tr = frame_to_transitions(frame)
+            self.seen.add(path.name)
+            if not all(bool(torch.isfinite(t).all()) for t in tr.values()):
+                # One NaN in one batch makes every weight NaN. The episode stays in the outbox to look at.
+                self.skipped += 1
+                print(f"SKIPPED {path.name}: it holds values that are not numbers (sensor fault?); not learned from",
+                      file=sys.stderr, flush=True)
+                continue
+            if self.transitions < self.algo_cfg.warmup_transitions:
+                self.warmup_steps += meta.n_steps
             priv, next_priv = tr["priv"][:, : self.priv_dim], tr["next_priv"][:, : self.priv_dim]
             self.buffer.add(tr["obs"], priv, tr["act"], tr["rew"], tr["next_obs"], next_priv, tr["done"])
-            self.seen.add(path.name)
             new_steps += meta.n_steps
             self.env_steps += meta.n_steps
             self.transitions += frame.height
@@ -122,9 +143,11 @@ class Learner:
             if self.env_steps <= self.logged_env_steps:
                 continue  # already in the metrics
             ret = float(tr["rew"].sum()) / meta.n_envs
-            stale = meta.policy_version >= 0 and not backfill  # versions behind when ingested; old data: meaningless
+            kind = "baseline_return" if meta.baseline else ("eval_return" if meta.evaluate else "train_return")
+            # Versions behind when ingested. Old data and baselines (no policy involved): meaningless.
+            stale = meta.policy_version >= 0 and not backfill and not meta.baseline
             self._write_row({
-                "eval_return" if meta.evaluate else "train_return": ret,
+                kind: ret,
                 "staleness": float(self.version - meta.policy_version) if stale else math.nan,
             })
             self.logged_env_steps = self.env_steps
@@ -136,10 +159,12 @@ class Learner:
         return self.transitions < self.algo_cfg.warmup_transitions or len(self.buffer) < self.algo_cfg.batch_size
 
     def update_budget(self) -> int:
-        """Updates still allowed for the data received so far (zero until the warmup data is in)."""
+        """Updates still allowed for the data received so far (zero until the warmup data is in). Warmup steps earn
+        none, as in SAC.train: otherwise the end of the warmup would release a burst of updates on nothing but random
+        actions before the actor gets its first weights."""
         if self.in_warmup():
             return 0
-        return self.algo_cfg.updates_per_step * self.env_steps - self.updates
+        return self.algo_cfg.updates_per_step * (self.env_steps - self.warmup_steps) - self.updates
 
     def learn(self, n: int) -> None:
         for _ in range(n):
@@ -153,11 +178,21 @@ class Learner:
 
     def publish(self) -> None:
         """New weights for the actor, which picks them up before its next episode."""
+        if not all(bool(torch.isfinite(p).all()) for p in self.policy.parameters()):
+            # Nothing published or saved from here: the last learner_state.pt is still a good one to carry on from.
+            raise RuntimeError(
+                f"the policy's weights are no longer numbers after {self.updates} updates (the learning diverged); "
+                f"not published. The actor keeps v{self.version}. Restart the learner to carry on from that state"
+            )
         self.version += 1
         # State before weights: if we die in between, the resume just skips this version number, which is harmless.
         # Restoring `updates` too stops a resume re-spending the whole outbox's update budget on old data.
         write_learner_state(self.shared, {"version": self.version, "updates": self.updates, "sac": self.sac.state_dict()})
         write_weights(self.shared, self.version, self.policy)
+        # The shared weights/ folder only keeps the newest few (the actor needs one, and the sync lists them all on
+        # every pass). The run keeps every version, so any policy of the session can be looked at again.
+        prune_weights(self.shared)
+        self.policy.save(self.run_dir.policy_version_path(self.version))
         self.policy.save(self.run_dir.policy_path)
         print(f"published v{self.version} after {self.updates} updates, {self.env_steps} env steps", flush=True)
 
@@ -178,6 +213,7 @@ class Learner:
         row = {
             "train_return": math.nan,
             "eval_return": math.nan,
+            "baseline_return": math.nan,
             "version": float(self.version),
             "env_steps": float(self.env_steps),
             "updates": float(self.updates),
@@ -186,11 +222,28 @@ class Learner:
         } | values
         self.run_dir.append_metrics(self.updates, row)
         latest_return = row["train_return"] if math.isnan(row["eval_return"]) else row["eval_return"]
-        if not math.isnan(latest_return):  # an episode row: keep the run's status up to date
-            status = self.run_dir.read_status()
-            status.iterations_done = self.version
-            status.final_return = latest_return
-            self.run_dir.write_status(status)
+        if not math.isnan(latest_return):  # a policy's episode: keep the run's status up to date
+            self.status.iterations_done = self.version
+            self.status.final_return = latest_return
+            self.beat(force=True)
+
+    def beat(self, force: bool = False) -> None:
+        """Write the run's status with a fresh heartbeat and how far the learner has got, every HEARTBEAT_S. The
+        Session tab shows these, and an old heartbeat on a "running" run is how it knows the learner was killed."""
+        now = time.monotonic()
+        if not force and now - self._last_beat < HEARTBEAT_S:
+            return
+        self._last_beat = now
+        self.status.heartbeat = datetime.now().astimezone()
+        self.status.info = {
+            "updates": float(self.updates),
+            "env_steps": float(self.env_steps),
+            "backlog": float(max(self.update_budget(), 0)),  # updates the data has earned that are not done yet
+            "buffer": float(len(self.buffer)),
+            "buffer_capacity": float(self.buffer.capacity),
+            "skipped_episodes": float(self.skipped),
+        }
+        self.run_dir.write_status(self.status)
 
     # ----- main loop -----
     def stop_requested(self) -> bool:
@@ -202,6 +255,7 @@ class Learner:
         idle_since: float | None = None  # when it last ran out of data, None while learning
         reminded = 0.0
         while not self.stop_requested() and (max_updates is None or self.updates < max_updates):
+            self.beat()
             if new_steps := self.ingest(new_episodes(self.shared, self.seen)):
                 if self.in_warmup():
                     print(f"warmup: {self.transitions}/{self.algo_cfg.warmup_transitions} transitions", flush=True)
@@ -257,6 +311,14 @@ def find_config(name: str) -> Path:
     return path if path.suffix == ".toml" else CONFIG.configs_dir / f"{name}.toml"
 
 
+def config_file_holds(config_file: Path, cfg: RunConfig) -> bool:
+    """Whether `config_file` still describes exactly `cfg` (False if it is gone, invalid, or edited since)."""
+    try:
+        return RunConfig.from_toml(config_file).model_dump() == cfg.model_dump()
+    except (OSError, ValueError):
+        return False
+
+
 def session_config(shared: Path, config_file: Path | None) -> RunConfig:
     """The config a session runs on. A session keeps the config it started with (its config.json), so only a new
     session needs `config_file`; one that differs from an existing session's is refused. Raises ValueError."""
@@ -274,6 +336,12 @@ def session_config(shared: Path, config_file: Path | None) -> RunConfig:
             "or start a new session"
         )
     return cfg
+
+
+def _interrupt(signum: int, frame: FrameType | None) -> None:
+    """SLURM ends a job (time limit, preemption) with SIGTERM. Treat it as Ctrl+C, so the learner saves its policy
+    and writes "stopped" instead of dying with its status still saying "running"."""
+    raise KeyboardInterrupt
 
 
 def run_learner(
@@ -302,6 +370,7 @@ def run_learner(
     print(f"session {shared.name}: {config.describe()}", flush=True)
     atomic_write_text(learner_run_path(shared), str(run.path))  # lets the Session tab find the learner's metrics
     learner = Learner(config, shared, run)
+    signal.signal(signal.SIGTERM, _interrupt)
     for folder in seed_from or []:
         n = learner.ingest(sorted(folder.glob("ep_*.parquet")), backfill=True)
         print(f"seeded {n} env steps from {folder}", flush=True)
@@ -319,9 +388,11 @@ def run_learner(
         state, error = "failed", repr(e)
         raise
     finally:
-        learner.policy.save(run.policy_path)
-        status = run.read_status()  # re-read: log() has been updating it during the run
+        if state != "failed":  # a failed learner's weights may be the reason it failed: keep the last published
+            learner.policy.save(run.policy_path)
+        status = learner.status  # the learner's own copy: it has been updating it during the run
         status.state, status.error, status.finished = state, error, datetime.now().astimezone()
+        status.heartbeat = status.finished
         run.write_status(status)
         print(f"FINISHED {state}", flush=True)
     return run

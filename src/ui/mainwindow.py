@@ -1,9 +1,11 @@
 import cProfile
+from datetime import datetime
 from pathlib import Path
 
 from qtpy.QtGui import QCloseEvent, QShortcut
 from qtpy.QtWidgets import QMainWindow, QTabWidget
 
+from src.config import CONFIG
 from src.ui.tabs.compare_tab import CompareTab
 from src.ui.tabs.rollout_tab import RolloutTab
 from src.ui.tabs.runs_tab import RunsTab
@@ -22,7 +24,7 @@ class MainWindow(QMainWindow):
         self.train = TrainTab()
         self.session = SessionTab()
         self.compare = CompareTab()
-        self.profiler = cProfile.Profile()
+        self.profiler: cProfile.Profile | None = None  # a profile of the UI being taken now, if any
 
         self.profile_shortcut = QShortcut("Ctrl+Shift+P", self)
         self.profile_shortcut.activated.connect(self._launch_profiler)
@@ -63,8 +65,15 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
 
     def _launch_profiler(self) -> None:
-        if self.profiler.getstats():
-            self.profiler.disable()
-            self.profiler.dump_stats("profile.prof")
-        else:
+        """Ctrl+Shift+P: start profiling the UI; again: stop and write the profile. Each capture is a new one."""
+        if self.profiler is None:
+            self.profiler = cProfile.Profile()
             self.profiler.enable()
+            self.statusBar().showMessage("Profiling the UI: Ctrl+Shift+P again to stop and save")
+            return
+        self.profiler.disable()
+        CONFIG.profiles_dir.mkdir(parents=True, exist_ok=True)
+        path = CONFIG.profiles_dir / f"ui_{datetime.now():%Y%m%d-%H%M%S}.prof"
+        self.profiler.dump_stats(path)
+        self.profiler = None
+        self.statusBar().showMessage(f"Profile written to {path}", 10_000)

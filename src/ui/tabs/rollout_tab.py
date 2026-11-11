@@ -22,8 +22,8 @@ from qtpy.QtWidgets import (
 from torch import Tensor
 
 from src.ml.envs.base import Trace
-from src.ml.evaluate import EvalResult, evaluate
-from src.ml.runs import list_runs, load_run, make_env
+from src.ml.evaluate import EvalResult, replay
+from src.ml.runs import list_runs, load_run
 from src.ui.plotting import plot_batch, series_pen
 
 POLICY_PEN = 0
@@ -122,10 +122,14 @@ class RolloutTab(QWidget):
             QMessageBox.warning(self, "Could not load run", repr(e))
             return
 
-        env = make_env(loaded.config, n_envs=self.n_envs.value())
-        seed = self.seed.value()
-        result, trace = evaluate(env, loaded.policy.as_act_fn(self.deterministic.isChecked()), seed)
-        base: tuple[EvalResult, Trace] | None = evaluate(env, None, seed) if self.baseline.isChecked() else None
+        act_fn = loaded.policy.as_act_fn(self.deterministic.isChecked())
+        try:
+            (result, trace), base = replay(
+                loaded.config, act_fn, self.n_envs.value(), self.seed.value(), self.baseline.isChecked()
+            )
+        except Exception as e:  # e.g. a real-tunnel run, which is not replayed from here
+            QMessageBox.warning(self, "Could not replay run", str(e))
+            return
         self._show_results(result, base[0] if base else None)
         self._plot(trace, base[1] if base else None)
 

@@ -32,3 +32,6 @@ Thumbs.db
 # HPC job logs and CFD case runs
 *.out
 /hpc/runs/
+# HPC job logs and CFD case runs
+*.out
+/hpc/runs/

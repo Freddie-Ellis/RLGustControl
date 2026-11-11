@@ -28,10 +28,10 @@ from src.ml.ae.sparse_latent import (
     TapAutoencoder,
 )
 from src.ml.algos.sac import TwinQ
-from src.ml.envs.base import Env
+from src.ml.envs.wind_tunnel import WindTunnelParams
 from src.ml.policy import SquashedGaussianPolicy
 from src.ml.run_config import RunConfig
-from src.ml.runs import make_env, make_policy
+from src.ml.runs import env_dims, make_policy
 
 DEFAULT_CONFIG = Path("configs/sac_tunnel_mock.toml")
 SAMPLE_NOTES = r"""
@@ -78,7 +78,7 @@ def _critic(cfg: RunConfig, obs_dim: int, priv_dim: int, act_dim: int) -> TwinQ:
 
 def build_system(cfg: RunConfig) -> neurolume.System:
     """The control loop of `cfg`: env -> observation -> actor -> action -> env, plus the critic that trains the actor."""
-    env = make_env(cfg, n_envs=1)
+    env = env_dims(cfg)
     obs_dim, act_dim = env.obs_dim, env.act_dim
     priv_dim = env.priv_dim if cfg.algo.critic_privileged else 0
 
@@ -110,16 +110,17 @@ def build_system(cfg: RunConfig) -> neurolume.System:
     return system
 
 
-def _tap_counts(env: Env) -> tuple[int, int]:
-    """(all taps, deployed k). The tunnel observation is [taps, previous action]."""
-    n_taps = env.obs_dim - env.act_dim
+def _tap_counts(cfg: RunConfig) -> tuple[int, int]:
+    """(all taps, deployed k) of a wind tunnel run."""
+    assert isinstance(cfg.env.params, WindTunnelParams), "the sparse-tap latent is built on the tunnel's taps"
+    n_taps = cfg.env.params.rig.n_taps
     return n_taps, min(K_TAPS, n_taps)
 
 
 def build_autoencoder_training(cfg: RunConfig) -> neurolume.System:
     """The full autoencoder, trained before SAC: encoder E, decoder D and the load heads. After this only E (for the
     critic) and D (for fault detection) are kept, both frozen."""
-    n_taps, _ = _tap_counts(make_env(cfg, n_envs=1))
+    n_taps, _ = _tap_counts(cfg)
     heads = ", ".join(LOAD_HEADS)
     system = neurolume.System("Sparse-tap latent: autoencoder training")
     data = system.block(
@@ -157,8 +158,8 @@ def build_autoencoder_training(cfg: RunConfig) -> neurolume.System:
 def build_latent_training(cfg: RunConfig) -> neurolume.System:
     """SAC in the tunnel on the sparse-tap latent: the actor acts on z_hat = g(k taps); the autoencoder's z = E(taps)
     only reaches the critic, as a privileged input. The autoencoder and g stay frozen."""
-    env = make_env(cfg, n_envs=1)
-    n_taps, k = _tap_counts(env)
+    env = env_dims(cfg)
+    n_taps, k = _tap_counts(cfg)
     act_dim = env.act_dim
     actor_in = LATENT_DIM + act_dim  # z_hat plus the previous action
     priv_dim = env.priv_dim + LATENT_DIM  # balance (and the env's other privileged signals) plus the true z
@@ -223,8 +224,8 @@ def build_latent_training(cfg: RunConfig) -> neurolume.System:
 def build_deployment(cfg: RunConfig) -> neurolume.System:
     """What runs on the wing: k taps, a fault mask, g and the actor. No balance, no encoder, no critic. The decoder
     only runs inside fault detection."""
-    env = make_env(cfg, n_envs=1)
-    n_taps, k = _tap_counts(env)
+    env = env_dims(cfg)
+    n_taps, k = _tap_counts(cfg)
     act_dim = env.act_dim
     system = neurolume.System("Sparse-tap latent: deployment")
     wing = system.block("wing", label=f"Wing, {k} taps only", description="no balance", input_shape=[act_dim],
@@ -289,6 +290,8 @@ def build_deployment(cfg: RunConfig) -> neurolume.System:
 def build_workspace(cfg: RunConfig) -> neurolume.Workspace:
     """The run as configured and, for a wind tunnel run, the sparse-tap latent workflow."""
     workspace = neurolume.Workspace()
+    configured = build_system(cfg)
+    workspace.add(configured.name, configured)
     if cfg.env.kind == "wind_tunnel":  # the latent workflow is built on the tunnel's pressure taps
         for system in (build_autoencoder_training(cfg), build_latent_training(cfg), build_deployment(cfg)):
             workspace.add(system.name, system)

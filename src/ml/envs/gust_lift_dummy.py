@@ -77,6 +77,6 @@ class GustLiftDummyEnv(Env):
         err = trace.extras["cl"] - self.params.cl_ref
         return {"cl_err_rms": float(err.pow(2).mean().sqrt()), "cl_err_peak": float(err.abs().max())}
 
-    def _extras(self) -> dict[str, Tensor]:
+    def extras(self) -> dict[str, Tensor]:
         return {"cl": self.cl, "cl_ref": torch.full_like(self.cl, self.params.cl_ref), "gust": self._gust()}
 

@@ -204,8 +204,10 @@ class SAC:
                     act = self.policy.act(obs.to(self.device))[0].cpu()
                 next_obs, rew = env.step(act)
                 next_priv = privileged()
-                # Our episodes only end on the clock (truncation), so done = 0 and the target still bootstraps.
-                buffer.add(obs, priv, act, rew, next_obs, next_priv, torch.zeros(env.n_envs))
+                # Running out of time is truncation: done = 0 and the target still bootstraps. done = 1 only where
+                # the env says the episode truly ended (a safety trip in the tunnel).
+                done = env.terminated()
+                buffer.add(obs, priv, act, rew, next_obs, next_priv, done)
                 ep_return += rew
                 obs, priv = next_obs, next_priv
                 n_transitions += env.n_envs
@@ -215,6 +217,8 @@ class SAC:
                         for k, v in self.update(buffer.sample(c.batch_size)).items():
                             sums[k] = sums.get(k, 0.0) + v
                         n_updates += 1
+                if done.any():
+                    break
 
             metrics = {"train_return": float(ep_return.mean()), "transitions": float(n_transitions)}
             metrics |= {k: v / n_updates for k, v in sums.items()} if n_updates else {

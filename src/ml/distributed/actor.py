@@ -7,6 +7,13 @@ It runs whatever the session's config.json says (the learner writes it from the 
 It never learns and never waits on the learner. Between episodes it picks up the newest weights, so one episode
 always runs on one policy version. In the tunnel it runs on the tunnel PC with n_envs = 1; in simulation it can run
 anywhere, with any n_envs, to test the decoupled setup.
+
+Four kinds of episode:
+    warmup     uniform random actions, until the learner has published its first weights
+    train      the policy, exploring
+    eval       the policy's mean action (every `eval_every`-th episode)
+    baseline   surfaces at neutral (every `baseline_every`-th): the uncontrolled wing the evals are compared with
+An episode ends early if the env says it has terminated (a safety trip).
 """
 
 import sys
@@ -27,6 +34,7 @@ from src.ml.distributed.files import (
     shared,
     stop_path,
     transitions_to_frame,
+    with_extras,
     write_episode,
 )
 from src.ml.run_config import RunConfig
@@ -60,7 +68,9 @@ class Actor:
             self.policy.load(path)
             print(f"loaded weights v{self.version}", flush=True)
 
-    def choose(self, obs: Tensor, evaluate: bool) -> Tensor:
+    def choose(self, obs: Tensor, evaluate: bool, baseline: bool = False) -> Tensor:
+        if baseline:
+            return self.env.zero_action(obs)
         if self.version < 0:
             # Warmup: the learner needs data before it can publish any weights. Uniform random actions also show
             # the critic the whole deflection range.
@@ -68,40 +78,53 @@ class Actor:
         return self.policy.act(obs, deterministic=evaluate)[0]
 
     @torch.no_grad()
-    def run_episode(self, evaluate: bool) -> Episode:
+    def run_episode(self, evaluate: bool, baseline: bool = False) -> Episode:
         """One episode in every env. Returns its metadata and one row per transition (T * N rows)."""
         env = self.env
         obs, priv = env.reset(), env.privileged()
         steps: list[tuple[Tensor, ...]] = []
+        extras: dict[str, list[Tensor]] = {}
         dts: list[float] = []
+        terminated = False
         t_prev = time.perf_counter()
         for _ in range(env.spec.horizon):
-            act = self.choose(obs, evaluate)
+            act = self.choose(obs, evaluate, baseline)
             next_obs, rew = env.step(act)
             next_priv = env.privileged()
-            # Episodes end on the clock (truncation), so done = 0. A safety trip in the tunnel would set it to 1.
-            steps.append((obs, priv, act, rew, next_obs, next_priv, torch.zeros(env.n_envs)))
+            # Running out of time is truncation (done = 0, the critic still bootstraps). done = 1 only where the env
+            # says the episode truly ended, e.g. a safety trip in the tunnel.
+            done = env.terminated()
+            steps.append((obs, priv, act, rew, next_obs, next_priv, done))
+            for name, value in env.extras().items():
+                extras.setdefault(name, []).append(value.clone())
             obs, priv = next_obs, next_priv
             now = time.perf_counter()
             dts.append(now - t_prev)
             t_prev = now
+            if done.any():
+                terminated = True
+                break  # nothing after a terminal state is a transition worth learning from
 
         # [T][7] of [N, ...] -> 7 tensors of [T * N, ...]. Every row is a complete transition, so the learner can
         # put rows straight into its replay buffer without reassembling episodes.
         columns = [torch.cat(field) for field in zip(*steps)]
+        info = env.episode_info()
         meta = EpisodeMetaData(
             episode_id=self.episode_id,
             policy_version=self.version,
             session_id=self.session_id,
             evaluate=evaluate,
+            baseline=baseline,
+            terminated=terminated,
             n_envs=env.n_envs,
             n_steps=len(steps),
             loop_dt_mean=sum(dts) / len(dts),
             loop_dt_max=max(dts),
-            turbulence_level=env.episode_info().get("turbulence_level"),
+            info=info,
             created=datetime.now().astimezone(),
         )
-        return meta, transitions_to_frame(*columns)
+        frame = with_extras(transitions_to_frame(*columns), {k: torch.cat(v) for k, v in extras.items()})
+        return meta, frame
 
     def _send(self, episode: Episode) -> None:
         """Write an episode. If the share is unreachable, keep it and retry later instead of stopping the tunnel."""
@@ -115,17 +138,21 @@ class Actor:
                 return
             self._unsent.pop(0)
 
-    def run(self, eval_every: int = 10, max_episodes: int | None = None) -> None:
+    def run(self, eval_every: int = 10, baseline_every: int = 0, max_episodes: int | None = None) -> None:
         """Run episodes until STOP appears in the shared folder (or `max_episodes` is reached)."""
         done = 0
         while not stop_path(self.shared).exists() and (max_episodes is None or done < max_episodes):
             self.maybe_load_weights()
-            evaluate = self.version >= 0 and self.episode_id % eval_every == 0
-            meta, frame = self.run_episode(evaluate)
+            # The baseline is the episode just before an eval's slot, so with the same period for both each eval
+            # has an uncontrolled episode seconds before it to be compared with.
+            baseline = baseline_every > 0 and (self.episode_id + 1) % baseline_every == 0
+            evaluate = not baseline and self.version >= 0 and self.episode_id % eval_every == 0
+            meta, frame = self.run_episode(evaluate, baseline)
             self._send((meta, frame))
             ret = float(frame["rew"].sum()) / meta.n_envs
-            kind = "eval " if evaluate else ("warm " if self.version < 0 else "train")
-            print(f"ep {meta.episode_id:6d} {kind} v{self.version:<4d} return {ret:9.4f}", flush=True)
+            kind = "base " if baseline else ("eval " if evaluate else ("warm " if self.version < 0 else "train"))
+            ended = f"  ENDED EARLY at step {meta.n_steps} (safety trip)" if meta.terminated else ""
+            print(f"ep {meta.episode_id:6d} {kind} v{self.version:<4d} return {ret:9.4f}{ended}", flush=True)
             self.episode_id += 1
             done += 1
 
@@ -145,7 +172,11 @@ def run_actor(
     print(f"session {shared.name}: {cfg.describe()}", flush=True)
     actor = Actor(cfg, shared, n_envs=n_envs, session_id=session_id)
     try:
-        actor.run(eval_every=eval_every or cfg.distributed.eval_every, max_episodes=max_episodes)
+        actor.run(
+            eval_every=eval_every or cfg.distributed.eval_every,
+            baseline_every=cfg.distributed.baseline_every,
+            max_episodes=max_episodes,
+        )
     finally:
         actor.env.close()  # surfaces to neutral and release the rig, however the actor stops
 

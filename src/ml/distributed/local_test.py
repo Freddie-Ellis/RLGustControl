@@ -63,7 +63,8 @@ def summarise(shared: Path, base: float | None, run_dir: RunDir | None) -> None:
         return
     df = pl.DataFrame([
         {
-            "kind": "eval" if m.evaluate else ("warmup" if m.policy_version < 0 else "train"),
+            "kind": "baseline" if m.baseline else "eval" if m.evaluate else "warmup" if m.policy_version < 0 else "train",
+            "tripped": m.terminated,
             "version": m.policy_version,
             "return": float(f["rew"].sum()) / m.n_envs,
             "dt_max_ms": 1000 * m.loop_dt_max,
@@ -73,7 +74,7 @@ def summarise(shared: Path, base: float | None, run_dir: RunDir | None) -> None:
     print(f"\n===== summary: {df.height} episodes =====")
     if base is not None:
         print(f"zero-deflection baseline : {base:9.2f}")
-    for kind in ("warmup", "train", "eval"):
+    for kind in ("warmup", "train", "eval", "baseline"):
         part = df.filter(pl.col("kind") == kind)
         if part.height:
             q = max(1, part.height // 4)
@@ -83,6 +84,7 @@ def summarise(shared: Path, base: float | None, run_dir: RunDir | None) -> None:
     if versions.len():
         print(f"weight versions used     : v{versions.min()} .. v{versions.max()} ({versions.n_unique()} distinct)")
     print(f"worst loop period        : {df['dt_max_ms'].max():.2f} ms")
+    print(f"episodes ended by a trip : {df['tripped'].sum()}")
     if run_dir is not None:
         m = run_dir.read_metrics()
         if m.height:

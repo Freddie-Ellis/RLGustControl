@@ -10,12 +10,17 @@ config.json has arrived locally. The actor only ever touches LOCAL, so a slow or
 loop: episodes queue in the local outbox and go up when the link is back. The local outbox doubles as a backup.
 
     tunnel PC  LOCAL/outbox/ep_*              --put-->   HPC  REMOTE/outbox/
-               LOCAL/weights/policy_v*.pt     <--get--        REMOTE/weights/
+               LOCAL/weights/policy_v*.pt     <--get--        REMOTE/weights/   (the newest only)
                LOCAL/config.json              <--get--        REMOTE/config.json
                LOCAL/learner_run.txt          <--get--        REMOTE/learner_run.txt
                runs_dir/<run>/                <--get--        the learner's run directory (metrics, status, policy)
                LOCAL/STOP                     <-both->        REMOTE/STOP
     (LOCAL = local_shared(session), REMOTE = hpc_shared(session))
+
+STOP goes both ways, and so does clearing it: a STOP that was on both sides and is then deleted here (the Session
+tab's "Clear STOP") is deleted on the HPC too, so the session can carry on. A STOP that is only on the HPC when the
+sync starts is one left from the last time the session was stopped (whatever it stopped has exited by now), so it is
+deleted as well: starting the sync means the session is meant to run.
 
 Everything except learner_state.pt (only the learner needs it) ends up identical on both sides, so the Session tab
 and the run list work on the tunnel PC as if the learner were local. learner_run.txt still holds the HPC path;
@@ -27,7 +32,12 @@ a half-uploaded episode. Downloads are renamed locally the same way. Restart-saf
 the listing each pass, so a restart (of this, the actor or the learner job) just carries on.
 
 It finishes by itself once STOP is on both sides, nothing is left to send, and the learner's status says it is done
-(or STOP_LINGER_S has passed, in case its job died). Launched from the Session tab's "Launch sync" too.
+(or STOP_LINGER_S has passed, in case its job died). Before it does, it fetches the learner's whole run directory
+once more: a file is otherwise only fetched again when its size or its modification minute changes, which a final
+policy.pt written in the same minute as the last fetch does not. Launched from the Session tab's "Launch sync" too.
+
+After every pass it writes LOCAL/sync_status.json (when the HPC was last reached, or why not), which the Session
+tab shows.
 
 Needs key-based SSH login to HOST with no passphrase prompt (`sftp -b` cannot answer prompts), and the tunnel PC
 must be able to reach the login node (on campus, or through the university VPN).
@@ -37,22 +47,26 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path, PurePosixPath
 
 from src.config import CONFIG
+from src.ml.atomic import replace, tmp_path
 from src.ml.distributed.files import (
     SESSION,
+    SyncStatus,
     config_path,
     hpc_shared,
     learner_run_dir,
     learner_run_path,
     local_shared,
     outbox_dir,
+    prune_weights,
     read_config,
     stop_path,
-    tmp_path,
     weights_dir,
     weights_version,
+    write_sync_status,
 )
 from src.ml.run_config import DistributedConfig
 from src.ml.runs import RunDir
@@ -65,8 +79,6 @@ CONNECT_TIMEOUT_S = 15
 LIST_TIMEOUT_S = 60.0
 TRANSFER_TIMEOUT_S = 600.0  # a whole pass, generous for a backlog of episodes after the link was down
 STOP_LINGER_S = 120.0  # after STOP, wait this long at most for the learner's final status before finishing
-REPLACE_TRIES = 10  # a download is renamed over a file the UI may be reading; Windows refuses that while it is open
-REPLACE_WAIT_S = 0.05  # between those tries: a reader holds the file for milliseconds
 
 type Entries = dict[str, str]  # file name -> "size month day time" from `ls -l`: changes whenever the file does
 
@@ -134,6 +146,9 @@ class Sync:
         self.remote = remote
         self.runs_dir = runs_dir
         self.fetched: dict[str, str] = {}  # remote path -> signature of the copy we have
+        self._stop_on_both = False  # STOP has been seen here and on the HPC: if ours then goes, it was cleared here
+        self._first_listing = True
+        self._last_ok: datetime | None = None  # the last pass that reached the HPC
         outbox_dir(local).mkdir(parents=True, exist_ok=True)  # the actor writes here before any weights exist
         weights_dir(local).mkdir(parents=True, exist_ok=True)
 
@@ -180,10 +195,14 @@ class Sync:
             if signature is not None and (self.fetched.get(remote) != signature or not local_path.exists()):
                 self._get(plan, remote, local_path, signature, report=True)
 
-        for name in sorted(listing.weights):  # oldest first, so the newest is renamed into place last
-            local_path = weights_dir(self.local) / name
-            if weights_version(name) is not None and not local_path.exists():
-                self._get(plan, self.remote_path(local_path), local_path, listing.weights[name], report=True)
+        # Only the newest weights: the actor never loads an older version, and after the link was down there may
+        # be hundreds it has missed.
+        versions = [name for name in listing.weights if weights_version(name) is not None]
+        if versions:
+            newest = max(versions, key=lambda name: weights_version(name) or 0)
+            local_path = weights_dir(self.local) / newest
+            if not local_path.exists():
+                self._get(plan, self.remote_path(local_path), local_path, listing.weights[newest], report=True)
 
         if (run := self.remote_run()) is not None:
             local_run = self.runs_dir / run.name
@@ -193,12 +212,26 @@ class Sync:
                     self._get(plan, f"{run}/{name}", local_run / name, signature, report=False)
 
         stop = stop_path(self.local)
-        if stop.name in listing.root and not stop.exists():
+        here, there = stop.exists(), stop.name in listing.root
+        if self._first_listing and there and not here:
+            self._stop_on_both = True  # left over from before this sync started: treat as cleared here
+        self._first_listing = False
+        if here and there:
+            self._stop_on_both = True
+        elif there and self._stop_on_both:
+            # It was on both sides and ours has gone: cleared here, so clear it there. The flag stays set until a
+            # listing shows the HPC's is gone too, so a failed pass tries again instead of bringing STOP back.
+            plan.commands.append(f"-rm {_q(self.remote_path(stop))}")
+            plan.summary.append("STOP cleared on HPC")
+        elif there:
             stop.touch()  # the learner was stopped on the HPC: stop the actor after its current episode
+            self._stop_on_both = True
             plan.summary.append("STOP from HPC")
-        elif stop.exists() and stop.name not in listing.root:
+        elif here:
             plan.commands.append(f"put {_q(stop.as_posix())} {_q(self.remote_path(stop))}")
             plan.summary.append("STOP to HPC")
+        else:
+            self._stop_on_both = False
 
         unsent = [p for p in sorted(outbox_dir(self.local).glob("ep_*.parquet")) if p.name not in listing.outbox]
         for parquet in unsent:
@@ -231,21 +264,34 @@ class Sync:
             busy = [d.local.name for d in plan.downloads if not self._put_in_place(d)]
             if busy:  # not remembered as fetched, so the next pass downloads them again
                 raise SyncError(f"could not replace {', '.join(busy)} (open in another program); next pass retries")
+            prune_weights(self.local)  # the learner prunes its own copy; this keeps ours from growing all session
         return PassResult(", ".join(plan.summary) or None, idle=not plan.commands)
 
     def _put_in_place(self, d: Download) -> bool:
         """Rename a finished download over the local file. On Windows that fails while anything has the file open
-        (the Session or Compare tab reading metrics.csv, say), so try a few times. False if it stayed busy."""
-        for attempt in range(REPLACE_TRIES):
-            try:
-                tmp_path(d.local).replace(d.local)
-            except PermissionError:
-                if attempt < REPLACE_TRIES - 1:
-                    time.sleep(REPLACE_WAIT_S)
-                continue
-            self.fetched[d.remote] = d.signature
-            return True
-        return False
+        (the Session or Compare tab reading metrics.csv, say), so `replace` tries a few times. False if it stayed
+        busy."""
+        try:
+            replace(tmp_path(d.local), d.local)
+        except PermissionError:
+            return False
+        self.fetched[d.remote] = d.signature
+        return True
+
+    def forget_run(self) -> None:
+        """Forget what has been fetched of the learner's run directory, so the next pass fetches all of it again."""
+        if (run := self.remote_run()) is not None:
+            self.fetched = {remote: sig for remote, sig in self.fetched.items() if not remote.startswith(f"{run}/")}
+
+    def _report(self, error: str | None) -> None:
+        """Write sync_status.json for the Session tab. Never worth failing a pass for."""
+        now = datetime.now().astimezone()
+        if error is None:
+            self._last_ok = now
+        try:
+            write_sync_status(self.local, SyncStatus(last_attempt=now, last_ok=self._last_ok, error=error))
+        except OSError:
+            pass
 
     def learner_finished(self) -> bool:
         """The learner's status (from our copy of its run directory) says it is no longer running."""
@@ -276,21 +322,31 @@ class Sync:
         print(f"syncing {self.local} <-> {self.host}:{self.remote}", flush=True)
         last = ""
         stop_seen: float | None = None
+        final_fetch_done = False
         while True:
             try:
                 result = self.run_pass()
             except OSError as e:  # SyncError, or any file trouble here: a pass is never worth stopping the session for
                 message = f"pass failed, retrying: {e}"
                 print(message, file=sys.stderr, flush=True)
+                self._report(str(e))
             else:
+                self._report(None)
                 message = result.summary or ""
                 if message and message != last:  # don't repeat "waiting ..." every pass
                     print(f"{time.strftime('%H:%M:%S')} {message}", flush=True)
                 if not stop_path(self.local).exists():
                     stop_seen = None  # STOP cleared: the session carries on
+                    final_fetch_done = False
                 elif stop_seen is None:
                     stop_seen = time.monotonic()
                 if result.idle and self.session_over(stop_seen):
+                    if not final_fetch_done:
+                        # The learner has written its last files. Fetch its run directory once more, whatever the
+                        # listing says: the final policy.pt can look unchanged (same size, same minute).
+                        final_fetch_done = True
+                        self.forget_run()
+                        continue
                     print(f"{time.strftime('%H:%M:%S')} STOP on both sides and nothing left to send: sync done", flush=True)
                     return
             last = message

@@ -8,24 +8,22 @@ kind = "wind_tunnel"
 [env.spec]
 dt = 0.01  # 100 Hz control loop, in real time
 horizon = 200  # 2 s episodes
+history_len = 1  # observation frames the actor sees; raise it to give the actor the recent past
 
+# The wing and its rig (taps, surfaces, their 0..20 deg travel, calibration) are defined once, in src/config.py.
 [env.params]
 io = "mock"
-max_deflection_deg = 15.0
-turbulence_min = 0.5
-turbulence_max = 3.0
 settle_s = 0.5
 cm_scale = 0.03
 action_cost = 0.05
 rate_cost = 0.05
+trip_penalty = 100.0  # taken off the reward when the safety layer trips (which also ends the episode)
 
 [env.params.safety]
 max_rate = 20.0
 cm_trip = 0.3
 
 [env.params.mock]
-n_taps = 50
-n_surfaces = 12
 daq_rate_hz = 1000.0
 
 [policy]
@@ -37,3 +35,7 @@ n_envs = 1
 warmup_transitions = 1000
 batch_size = 256
 updates_per_step = 1
+
+[distributed]
+eval_every = 10
+baseline_every = 10  # the episode before each eval holds the surfaces at neutral: the uncontrolled Cm

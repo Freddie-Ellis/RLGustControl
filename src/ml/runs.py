@@ -13,6 +13,7 @@ runs/<session>/                  a distributed learner's run: named after its se
 
 import csv
 import io
+import math
 import socket
 import sys
 from dataclasses import dataclass
@@ -24,6 +25,7 @@ import polars as pl
 from pydantic import BaseModel
 
 from src.config import CONFIG
+from src.ml.atomic import atomic_write_text
 from src.ml.envs.base import Env
 from src.ml.policy import SquashedGaussianPolicy
 from src.ml.registry import build_env
@@ -39,6 +41,10 @@ class RunStatus(BaseModel):
     iterations_done: int = 0
     final_return: float | None = None
     error: str | None = None
+    # Written every few seconds by a process that is alive (the distributed learner). A run that says "running"
+    # with an old heartbeat was killed without a chance to say so. None for runs that do not write one.
+    heartbeat: datetime | None = None
+    info: dict[str, float] = {}  # the process's own progress numbers, e.g. the learner's backlog and buffer fill
 
 
 class RunDir:
@@ -46,6 +52,7 @@ class RunDir:
 
     def __init__(self, path: Path) -> None:
         self.path = path
+        self._metric_fields: list[str] | None = None  # metrics.csv's columns, once known
 
     @classmethod
     def create(cls, cfg: RunConfig, root: Path = CONFIG.runs_dir) -> RunDir:
@@ -68,7 +75,7 @@ class RunDir:
 
     def _init(self, cfg: RunConfig, exist_ok: bool = False) -> RunDir:
         self.path.mkdir(parents=True, exist_ok=exist_ok)
-        self.config_path.write_text(cfg.model_dump_json(indent=2))
+        atomic_write_text(self.config_path, cfg.model_dump_json(indent=2))
         self.write_status(RunStatus(started=datetime.now()))
         return self
 
@@ -101,6 +108,10 @@ class RunDir:
     def log_path(self) -> Path:
         return self.path / "output.log"
 
+    def policy_version_path(self, version: int) -> Path:
+        """Where the distributed learner keeps every weight version it published, for good: policies/ in the run."""
+        return self.path / "policies" / f"policy_v{version:06d}.pt"
+
     def tee_output(self) -> None:
         """From now on, also write everything this process prints (stdout and stderr, so an uncaught traceback too)
         to output.log. Appends: a resumed run keeps one log, with a line marking each start."""
@@ -118,14 +129,28 @@ class RunDir:
         return RunStatus.model_validate_json(self.status_path.read_text())
 
     def write_status(self, status: RunStatus) -> None:
-        self.status_path.write_text(status.model_dump_json(indent=2))
+        text = status.model_dump_json(indent=2)
+        try:
+            atomic_write_text(self.status_path, text)
+        except PermissionError:
+            # A reader kept the file open through every try (Windows). Losing the status would be worse than a
+            # reader catching it half-written once, which every reader already puts up with.
+            self.status_path.write_text(text)
 
     def append_metrics(self, iteration: int, metrics: dict[str, float]) -> None:
-        """Append one row. Writes the header on the first call; columns must stay the same afterwards."""
+        """Append one row. The first row of a new file sets the columns. Later rows follow the file's header: a
+        column the file does not have is left out and one the row does not have is NaN, so a run carried on by
+        newer code (which may log more) keeps a valid CSV."""
         row = {"iteration": iteration, **metrics}
-        new_file = not self.metrics_path.exists()
+        new_file = not self.metrics_path.exists() or self.metrics_path.stat().st_size == 0
+        if self._metric_fields is None:
+            if new_file:
+                self._metric_fields = list(row)
+            else:
+                with open(self.metrics_path, newline="") as f:
+                    self._metric_fields = next(csv.reader(f))
         with open(self.metrics_path, "a", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=list(row))
+            writer = csv.DictWriter(f, fieldnames=self._metric_fields, extrasaction="ignore", restval=math.nan)
             if new_file:
                 writer.writeheader()
             writer.writerow(row)
@@ -193,8 +218,25 @@ def make_env(cfg: RunConfig, n_envs: int, seed: int | None = None) -> Env:
     return build_env(cfg.env, n_envs=n_envs, seed=seed)
 
 
-def make_policy(cfg: RunConfig) -> SquashedGaussianPolicy:
+@dataclass(frozen=True)
+class EnvDims:
+    """The sizes of a run's env: all that anything but the process stepping it needs to know about it."""
+    obs_dim: int
+    act_dim: int
+    priv_dim: int
+    priv_names: tuple[str, ...]
+
+
+def env_dims(cfg: RunConfig) -> EnvDims:
+    """The sizes of `cfg`'s env, for building networks and reading episodes. The one place an env is built without
+    being run: it is never reset, so a wind tunnel env opens no hardware here, and it is thrown away at once. Only
+    the process that steps the env (the actor, or train.py) calls `make_env` and keeps what it gets."""
     env = make_env(cfg, n_envs=1)
+    return EnvDims(env.obs_dim, env.act_dim, env.priv_dim, env.priv_names)
+
+
+def make_policy(cfg: RunConfig) -> SquashedGaussianPolicy:
+    env = env_dims(cfg)
     return SquashedGaussianPolicy(env.obs_dim, env.act_dim, hidden=cfg.policy.hidden, init_log_std=cfg.policy.init_log_std)
 
 

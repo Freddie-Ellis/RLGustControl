@@ -8,9 +8,10 @@
         learner_state.pt            the learner's full SAC state (critics, alpha, optimisers), for resuming
         STOP                        create to stop the actor after its current episode
         learner_run.txt             path of the learner's runs/ directory (for the Session tab)
+        sync_status.json            SyncStatus: when the sync last reached the HPC (tunnel PC only, never uploaded)
 
-Every file is written to `<name>.tmp` and then renamed, so a reader never sees a half-written file even over a
-network share. Keep the shared folder outside OneDrive: sync can lock or duplicate files mid-write.
+Every file is written to `<name>.tmp` and then renamed (src/ml/atomic.py), so a reader never sees a half-written
+file even over a network share. Keep the shared folder outside OneDrive: sync can lock or duplicate files mid-write.
 
 With the learner on the HPC, each side has its own copy of this folder and `sync.py` (on the tunnel PC) mirrors them,
 plus the learner's run directory. Only learner_state.pt stays on the HPC: only the learner needs it.
@@ -28,10 +29,13 @@ from pydantic import BaseModel
 from torch import Tensor
 
 from src.config import CONFIG
+from src.ml.atomic import atomic_write_text, replace, tmp_path
 from src.ml.policy import SquashedGaussianPolicy
 from src.ml.run_config import RunConfig
 
 TRANSITION_COLUMNS = ("obs", "priv", "act", "rew", "next_obs", "next_priv", "done")
+EXTRA_PREFIX = "x_"  # columns after the transition: the env's own per-step signals (Env.extras), e.g. x_cm
+KEEP_WEIGHTS = 20  # weight versions kept in weights/; the actor only ever loads the newest
 _WEIGHTS_RE = re.compile(r"policy_v(\d+)\.pt")
 
 # ----- where sessions live: the one place to change it -----
@@ -111,6 +115,10 @@ def learner_state_path(shared: Path) -> Path:
     return shared / "learner_state.pt"
 
 
+def sync_status_path(shared: Path) -> Path:
+    return shared / "sync_status.json"
+
+
 def init_shared(shared: Path, cfg: RunConfig) -> None:
     """Create the folder layout and write the run config. Called by the learner when a session starts."""
     outbox_dir(shared).mkdir(parents=True, exist_ok=True)
@@ -122,18 +130,6 @@ def read_config(shared: Path) -> RunConfig:
     return RunConfig.model_validate_json(config_path(shared).read_text())
 
 
-# ----- atomic writes -----
-def tmp_path(path: Path) -> Path:
-    """`ep_1.json` -> `ep_1.json.tmp`. Keeping the full name stops ep_1.json and ep_1.parquet sharing a tmp file."""
-    return path.with_name(path.name + ".tmp")
-
-
-def atomic_write_text(path: Path, text: str) -> None:
-    tmp = tmp_path(path)
-    tmp.write_text(text)
-    tmp.replace(path)
-
-
 # ----- episodes -----
 class EpisodeMetaData(BaseModel):
     """Everything about one episode except the transitions themselves."""
@@ -142,11 +138,14 @@ class EpisodeMetaData(BaseModel):
     policy_version: int  # -1 = warmup with random actions
     session_id: str  # one tunnel session; lets the learner drop a session if the rig drifted
     evaluate: bool  # deterministic policy (no exploration), for measuring Cm suppression
+    baseline: bool = False  # surfaces held at neutral all episode: the uncontrolled Cm to compare against
+    terminated: bool = False  # ended early on a true terminal state (a safety trip); its last row has done = 1
     n_envs: int  # 1 in the tunnel
     n_steps: int
     loop_dt_mean: float  # control loop period actually achieved [s]
     loop_dt_max: float  # worst period: a deadline miss shows up here
-    turbulence_level: float | None = None  # turbulence device setting, if the env has one
+    turbulence_level: float | None = None  # no longer written (the env does not set one); in older episodes
+    info: dict[str, float] = {}  # Env.episode_info: the rig's health over the episode (trips, timing, DAQ, limiter)
     created: datetime
 
 
@@ -163,13 +162,27 @@ def frame_to_transitions(frame: pl.DataFrame) -> dict[str, Tensor]:
     return {name: torch.from_numpy(frame[name].to_numpy().copy()) for name in TRANSITION_COLUMNS}
 
 
+def with_extras(frame: pl.DataFrame, extras: dict[str, Tensor]) -> pl.DataFrame:
+    """Add the env's per-step signals, each [M] in row order, as `x_<name>` columns. The learner ignores them; they
+    are the record of what the rig did (raw Cm, tick lateness, DAQ samples per tick, ...)."""
+    return frame.with_columns(pl.Series(EXTRA_PREFIX + name, v.float().numpy()) for name, v in extras.items())
+
+
+def frame_extras(frame: pl.DataFrame) -> dict[str, Tensor]:
+    """Inverse of `with_extras`: signal name -> [M]. Empty for episodes written before extras were recorded."""
+    return {
+        c.removeprefix(EXTRA_PREFIX): torch.from_numpy(frame[c].to_numpy().copy())
+        for c in frame.columns if c.startswith(EXTRA_PREFIX)
+    }
+
+
 def write_episode(shared: Path, meta: EpisodeMetaData, frame: pl.DataFrame) -> None:
     """Write metadata, then transitions. The parquet appearing is what marks the episode complete. Raises on error."""
     stem = outbox_dir(shared) / f"ep_{meta.episode_id:06d}"
     atomic_write_text(stem.with_suffix(".json"), meta.model_dump_json(indent=2))
     parquet = stem.with_suffix(".parquet")
     frame.write_parquet(tmp_path(parquet), compression="zstd")
-    tmp_path(parquet).replace(parquet)
+    replace(tmp_path(parquet), parquet)
 
 
 def new_episodes(shared: Path, seen: set[str]) -> list[Path]:
@@ -187,15 +200,28 @@ def write_weights(shared: Path, version: int, policy: SquashedGaussianPolicy) ->
     """Save CPU copies of the weights, so the tunnel PC (no GPU) can load them."""
     path = weights_dir(shared) / f"policy_v{version:06d}.pt"
     torch.save({k: v.detach().cpu() for k, v in policy.state_dict().items()}, tmp_path(path))
-    tmp_path(path).replace(path)
+    replace(tmp_path(path), path)
     return path
+
+
+def prune_weights(shared: Path, keep: int = KEEP_WEIGHTS) -> None:
+    """Delete all but the newest `keep` weight versions. A long session publishes thousands, and every one is
+    listed on each sync pass. A file the actor is loading right now cannot be deleted on Windows: it goes next time."""
+    found = sorted(
+        (v, p) for p in weights_dir(shared).glob("policy_v*.pt") if (v := weights_version(p.name)) is not None
+    )
+    for _, path in found[:-keep]:
+        try:
+            path.unlink()
+        except OSError:
+            pass
 
 
 def write_learner_state(shared: Path, state: dict[str, Any]) -> None:
     """Only the learner reads this back, so tensors stay on its device."""
     path = learner_state_path(shared)
     torch.save(state, tmp_path(path))
-    tmp_path(path).replace(path)
+    replace(tmp_path(path), path)
 
 
 def read_learner_state(shared: Path, device: torch.device) -> dict[str, Any] | None:
@@ -213,3 +239,24 @@ def latest_weights(shared: Path) -> tuple[int, Path] | None:
     """(version, path) of the newest weights, or None if the learner has not published any yet."""
     found = [(v, p) for p in weights_dir(shared).glob("policy_v*.pt") if (v := weights_version(p.name)) is not None]
     return max(found) if found else None
+
+
+# ----- sync status -----
+class SyncStatus(BaseModel):
+    """How the link to the HPC is doing, written by sync.py after every pass so the Session tab can show it."""
+
+    last_attempt: datetime
+    last_ok: datetime | None = None  # the last pass that reached the HPC
+    error: str | None = None  # why the latest pass failed, None if it did not
+
+
+def write_sync_status(shared: Path, status: SyncStatus) -> None:
+    atomic_write_text(sync_status_path(shared), status.model_dump_json(indent=2))
+
+
+def read_sync_status(shared: Path) -> SyncStatus | None:
+    """None if no sync has run on this folder (or its file was caught mid-write)."""
+    try:
+        return SyncStatus.model_validate_json(sync_status_path(shared).read_text())
+    except (OSError, ValueError):
+        return None

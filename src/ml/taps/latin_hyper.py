@@ -1,6 +1,9 @@
 """CFD case design: structured sweeps plus a maximin Latin hypercube over all inputs.
 
-Inputs are the 12 actuator angles, angle of attack and sideslip. Gusts from the active grid
+Inputs are the 12 actuator angles, angle of attack and sideslip. The splitter actuators
+(`CONFIG.rig.splitter_surfaces`) are either closed or open between `SPLITTER_MIN_OPEN_DEG` and
+`splitter_max_deg`, a limit of the CFD mesh (the rig has no dead zone); `SPLITTER_CLOSED_FRACTION`
+of the LHS cases have each one closed. Gusts from the active grid
 change the effective AoA and sideslip, so steady RANS over these ranges covers the quasi-steady
 gust response.
 
@@ -17,43 +20,80 @@ import polars as pl
 import torch
 from pydantic import BaseModel
 
+from src.config import CONFIG
+
 CASES_DIR: Path = Path(__file__).parent / "cfd_cases"
 
-N_ACTUATORS: int = 12
-ACTUATOR_MIN_DEG: float = 0.0
-ACTUATOR_MAX_DEG: float = 20.0
+# The wing itself is defined once, in src/config.py.
+ACTUATOR_MIN_DEG: float = CONFIG.rig.actuator_min_deg
+ACTUATOR_MAX_DEG: float = CONFIG.rig.actuator_max_deg
 AOA_MIN_DEG: float = 0
 AOA_MAX_DEG: float = 25
 NOMINAL_AOA_DEG: float = 10.0  # placeholder: AoA the wing normally flies at
 SIDESLIP_MAX_DEG: float = 10.0  # placeholder: largest sideslip the active grid's gusts produce
 ANGLE_RESOLUTION_DEG: float = 0.5  # smallest angle step the CFD setup / mesh deformation can use
+# The CFD mesh can't deform a splitter to a small opening: it is either closed or open by at least this much.
+SPLITTER_MIN_OPEN_DEG: float = 20.0
+SPLITTER_CLOSED_FRACTION: float = 0.2  # share of LHS cases with each splitter closed
 
 AOA_SWEEP_STEP_DEG: float = 1.0
 SIDESLIP_SWEEP_STEP_DEG: float = 2.0
 
 
 class DesignInput(BaseModel, frozen=True):
-    """One CFD input: its case-table column, range, resolution and value in structured cases."""
+    """One CFD input: its case-table column, range, resolution and value in structured cases.
+
+    With `open_min` set the input has a dead zone: it is either `lower` (closed) or in
+    [`open_min`, `upper`]. The first `closed_fraction` of the unit interval maps to closed and the
+    rest spreads over the open range, so the LHS still stratifies the open range.
+    """
 
     name: str
     lower: float
     upper: float
     resolution: float = ANGLE_RESOLUTION_DEG
     neutral: float = 0.0
+    open_min: float | None = None
+    closed_fraction: float = SPLITTER_CLOSED_FRACTION
+
+    def from_unit(self, u: torch.Tensor) -> torch.Tensor:
+        """Unit-interval LHS coordinate -> value."""
+        if self.open_min is None:
+            return self.lower + u * (self.upper - self.lower)
+        f = self.closed_fraction
+        opened = self.open_min + (u - f) / (1.0 - f) * (self.upper - self.open_min)
+        return torch.where(u < f, self.lower, opened)
+
+    def to_unit(self, v: torch.Tensor) -> torch.Tensor:
+        """Value -> unit-interval coordinate. A closed value sits in the middle of the closed band."""
+        if self.open_min is None:
+            return (v - self.lower) / (self.upper - self.lower)
+        f = self.closed_fraction
+        opened = f + (v - self.open_min) / (self.upper - self.open_min) * (1.0 - f)
+        return torch.where(v <= self.lower, f / 2, opened.clamp(f, 1.0))
 
 
 def actuator_name(k: int) -> str:
     return f"actuator_{k}_deg"
 
 
+def actuator_input(k: int) -> DesignInput:
+    rig = CONFIG.rig
+    if k in rig.splitter_surfaces:
+        return DesignInput(
+            name=actuator_name(k),
+            lower=float(rig.min_deg[k]),  # closed: flush with the wing
+            upper=rig.splitter_max_deg,
+            open_min=SPLITTER_MIN_OPEN_DEG,
+        )
+    return DesignInput(name=actuator_name(k), lower=ACTUATOR_MIN_DEG, upper=ACTUATOR_MAX_DEG)
+
+
 AOA_NAME: str = "aoa_deg"
 SIDESLIP_NAME: str = "sideslip_deg"
 
 DESIGN_INPUTS: tuple[DesignInput, ...] = (
-    *(
-        DesignInput(name=actuator_name(k), lower=ACTUATOR_MIN_DEG, upper=ACTUATOR_MAX_DEG)
-        for k in range(N_ACTUATORS)
-    ),
+    *(actuator_input(k) for k in range(CONFIG.rig.n_surfaces)),
     DesignInput(name=AOA_NAME, lower=AOA_MIN_DEG, upper=AOA_MAX_DEG, neutral=NOMINAL_AOA_DEG),
     DesignInput(name=SIDESLIP_NAME, lower=-SIDESLIP_MAX_DEG, upper=SIDESLIP_MAX_DEG),
 )
@@ -170,12 +210,13 @@ def lhs_cases(
 ) -> pl.DataFrame:
     """`n` maximin LHS cases, spread out around the `fixed` cases already in the design."""
     names = input_names(inputs)
-    lower, upper = input_bounds(inputs)
-    resolution = torch.tensor([i.resolution for i in inputs], dtype=torch.float64)
-    fixed_unit = (fixed.select(names).to_torch(dtype=pl.Float64) - lower) / (upper - lower)
+    fixed_values = fixed.select(names).to_torch(dtype=pl.Float64)
+    fixed_unit = torch.stack([i.to_unit(fixed_values[:, k]) for k, i in enumerate(inputs)], dim=1)
     unit = maximin_lhs(n, len(inputs), fixed=fixed_unit, seed=seed)
-    values = torch.round((lower + unit * (upper - lower)) / resolution) * resolution
-    columns = {name: values[:, k].tolist() for k, name in enumerate(names)}
+    columns = {
+        i.name: (torch.round(i.from_unit(unit[:, k]) / i.resolution) * i.resolution).tolist()
+        for k, i in enumerate(inputs)
+    }
     return pl.DataFrame({"kind": ["lhs"] * n} | columns)
 
 

@@ -19,3 +19,8 @@ convergence_tolerance = 1e-4
 
 n_non_orthogonal_correctors = 1   # the meshes reach ~70 deg non-orthogonality
 keep_fields = true                # keep the final 3D fields (~200 MB per condition) for inspection
+
+# Slices of p, U, k and nut written with the final fields (postProcessing/flowSlices/<iteration>/, VTK):
+# planes of constant x from the nose to one aircraft length behind it, and of constant y across the span.
+n_slices_x = 10
+n_slices_y = 11   # odd, so one plane is on the centreline (offset 0.5 mm from the mesh faces at y = 0)

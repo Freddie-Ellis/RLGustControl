@@ -35,6 +35,8 @@ Function objects (written to postProcessing/):
     solverInfo               residuals at every iteration
     yPlus, wallShearStress   written with the final fields
     wallSurfaces             pressure, wall shear stress and y+ on the walls as VTK, to download
+    flowSlices               p, U, k and nut on planes across x and y around the aircraft (VTK), to check the
+                             flow looks physical without the full 3D fields
 
 Run as a script (normally from the Slurm job, hpc/solve_case.slurm):
     python -m src.cfd.solve conditions configs/cases/uav_clean.toml       list the case's flow conditions
@@ -86,6 +88,10 @@ class SolverSettings(StrictModel):
 
     n_non_orthogonal_correctors: int = Field(default=1, ge=0)  # the meshes reach ~70 deg non-orthogonality
     keep_fields: bool = True  # keep the final 3D fields (~200 MB per condition); results are kept regardless
+    # Slices written with the final fields: evenly spaced planes of constant x (from the nose to one aircraft
+    # length behind it) and of constant y (across the span), cropped to a box around the aircraft and near wake.
+    n_slices_x: int = Field(default=10, ge=0)
+    n_slices_y: int = Field(default=10, ge=0)
 
     @classmethod
     def from_toml(cls, path: Path) -> SolverSettings:
@@ -148,6 +154,31 @@ def _link_mesh(mesh_dir: Path, solve_dir: Path) -> None:
         target.symlink_to(os.path.relpath(source.resolve(), target.parent.resolve()), target_is_directory=True)
     except OSError:
         shutil.copytree(source, target)
+
+
+def _slices(mesh_dir: Path, n_x: int, n_y: int) -> str:
+    """Cutting-plane entries for the flowSlices function object: planes at the centres of n_x equal steps from
+    the nose to one aircraft length behind the tail, and n_y equal steps across the span, each cropped to the
+    aircraft's bounding box padded by half a length (a length behind, a length above for the wake at high
+    alpha)."""
+    bbox = json.loads((mesh_dir / "mesh_case.json").read_text())["aircraft_bbox_m"]
+    lo, hi = bbox["lo"], bbox["hi"]
+    length = hi[0] - lo[0]
+    box_lo = (lo[0] - 0.5 * length, lo[1] - 0.5 * length, lo[2] - 0.5 * length)
+    box_hi = (hi[0] + 1.5 * length, hi[1] + 0.5 * length, hi[2] + length)
+    bounds = f"bounds {foam_vector(box_lo)} {foam_vector(box_hi)};"
+    xs = [lo[0] + (i + 0.5) * (2 * length) / n_x for i in range(n_x)]
+    # Shifted 0.5 mm so that, with an odd n_y, the centre plane doesn't lie on the mesh's faces at y = 0 (a plane
+    # along mesh faces can come out with holes).
+    ys = [lo[1] + (i + 0.5) * (hi[1] - lo[1]) / n_y + 0.5e-3 for i in range(n_y)]
+    planes = [(f"x_{x * 1e3:.0f}mm", (x, 0.0, 0.0), (1, 0, 0)) for x in xs]
+    planes += [(f"y_{'m' if y < 0 else 'p'}{abs(y) * 1e3:.0f}mm", (0.0, y, 0.0), (0, 1, 0)) for y in ys]
+    return "
+".join(
+        f"            {name} {{ type cuttingPlane; planeType pointAndNormal; "
+        f"pointAndNormalDict {{ point {foam_vector(point)}; normal {foam_vector(normal)}; }} "
+        f"{bounds} interpolate false; }}"
+        for name, point, normal in planes)
 
 
 def write_solve_case(
@@ -241,6 +272,21 @@ RAS
         writeInterval   1;
     }}""" for c in geometry.control_surfaces if c.name in walls)
 
+    slices = "" if s.n_slices_x + s.n_slices_y == 0 else f"""
+    flowSlices
+    {{
+        type            surfaces;
+        libs            (sampling);
+        writeControl    writeTime;
+        surfaceFormat   vtk;
+        interpolationScheme cell;
+        fields          (p U k nut);
+        surfaces
+        {{
+{_slices(mesh_dir, s.n_slices_x, s.n_slices_y)}
+        }}
+    }}
+"""
     write_foam_file(solve_dir, "system/controlDict", f"""
 application     simpleFoam;
 startFrom       latestTime;
@@ -346,7 +392,7 @@ functions
             walls {{ type patch; patches ("{wall_regex}"); interpolate false; }}
         }}
     }}
-}}
+{slices}}}
 """)
 
     write_foam_file(solve_dir, "system/fvSchemes", """

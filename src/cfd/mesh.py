@@ -82,7 +82,8 @@ class MeshSettings(StrictModel):
     # (by more than resolve_feature_angle between neighbouring cells, e.g. at leading edges).
     fixed_body_level: tuple[int, int] = (8, 9)
     control_surface_level: tuple[int, int] = (8, 9)
-    feature_level: int = 9                 # level along extracted sharp edges
+    surface_levels: dict[str, tuple[int, int]] = {}  # per-body levels replacing the two above, e.g. wingtip_r
+    feature_level: int = 9                # level along extracted sharp edges
     feature_included_angle: float = 150.0  # edges where the surface turns by more than 180 - this are features
     resolve_feature_angle: float = 30.0
     n_cells_between_levels: int = 3        # buffer cells between refinement levels, for smooth size changes
@@ -110,6 +111,13 @@ class MeshSettings(StrictModel):
 
     # Iteration counts. More iterations rarely improve the result once it settles, but cost run time.
     n_snap_solve_iter: int = 100     # snapping: mesh-displacement smoothing iterations (nSolveIter)
+    # Snapping relaxation. Where moving a wall point fully onto the surface would break the mesh quality
+    # limits, snappyHexMesh scales the move back, leaving a small dent; more relaxation and patch smoothing
+    # give it more room to reach the surface.
+    n_snap_smooth_patch: int = 3     # patch smoothing before projecting onto the surface (nSmoothPatch)
+    n_snap_relax_iter: int = 5       # relaxation iterations when quality limits are hit (nRelaxIter)
+    n_feature_snap_iter: int = 10    # feature-edge snapping iterations (nFeatureSnapIter)
+    snap_tolerance: float = 2.0      # how far (in local cell sizes) points look for the surface (tolerance)
     n_layer_iter: int = 50           # layer addition: overall iterations (nLayerIter)
     n_relaxed_layer_iter: int = 20   # ...after which the relaxed quality limits apply (nRelaxedIter)
 
@@ -209,6 +217,8 @@ def write_mesh_case(
     """
     s = settings
     bodies = deflected_bodies(geometry, deflections_deg)  # metres, each body closed
+    if unknown := sorted(set(s.surface_levels) - set(bodies)):
+        raise ValueError(f"surface_levels names unknown bodies: {unknown}")
     skin = outer_skin(bodies)
     problems = check_skin(skin.patches, s.skin_min_gap)
     if problems:
@@ -286,8 +296,8 @@ boundary
         return f"            {name} {{ level ({levels[0]} {levels[1]}); patchInfo {{ type wall; }} }}"
 
     region_levels = "\n".join(
-        [region_entry(n, s.fixed_body_level) for n in fixed_names]
-        + [region_entry(n, s.control_surface_level) for n in surface_names]
+        [region_entry(n, s.surface_levels.get(n, s.fixed_body_level)) for n in fixed_names]
+        + [region_entry(n, s.surface_levels.get(n, s.control_surface_level)) for n in surface_names]
     )
 
     write_foam_file(case_dir, "system/snappyHexMeshDict", f"""
@@ -356,11 +366,11 @@ castellatedMeshControls
 
 snapControls
 {{
-    nSmoothPatch    3;
-    tolerance       2.0;
+    nSmoothPatch    {s.n_snap_smooth_patch};
+    tolerance       {s.snap_tolerance:g};
     nSolveIter      {s.n_snap_solve_iter};
-    nRelaxIter      5;
-    nFeatureSnapIter 10;
+    nRelaxIter      {s.n_snap_relax_iter};
+    nFeatureSnapIter {s.n_feature_snap_iter};
     implicitFeatureSnap    false;
     explicitFeatureSnap    true;   // snap to the edges in the features file
     multiRegionFeatureSnap false;

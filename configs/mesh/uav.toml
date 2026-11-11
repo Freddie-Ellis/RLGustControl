@@ -48,6 +48,13 @@ max_global_cells = 100_000_000
 # Iteration counts. Cutting them to 30 / 20 / 10 left 4 bad face tets after snapping and reduced layer
 # coverage from ~85% to ~70%.
 n_snap_solve_iter = 100
+# Snapping relaxation (OpenFOAM's defaults). Snapping backs off where a full move would break the quality
+# limits, leaving dents: on the coarse pitched mesh, up to 0.2 mm on the tapered wingtips and 0.3 mm along the
+# fuselage-wing crease (|y| = 40 mm). Being tested with more relaxation in configs/cases/snap_test/.
+n_snap_smooth_patch = 3
+n_snap_relax_iter = 5
+n_feature_snap_iter = 10
+snap_tolerance = 2.0
 n_layer_iter = 100   # 50 left 3 bad face tets on the fine study mesh (base 0.288); 100 cleared them.
                      # mesh_coarse and mesh_medium were made with 50.
 n_relaxed_layer_iter = 20

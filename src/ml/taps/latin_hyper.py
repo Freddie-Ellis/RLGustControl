@@ -30,7 +30,7 @@ ACTUATOR_MAX_DEG: float = CONFIG.rig.actuator_max_deg
 AOA_MIN_DEG: float = 0
 AOA_MAX_DEG: float = 25
 NOMINAL_AOA_DEG: float = 10.0  # placeholder: AoA the wing normally flies at
-SIDESLIP_MAX_DEG: float = 10.0  # placeholder: largest sideslip the active grid's gusts produce
+SIDESLIP_MAX_DEG: float = 10.0 
 ANGLE_RESOLUTION_DEG: float = 0.5  # smallest angle step the CFD setup / mesh deformation can use
 # The CFD mesh can't deform a splitter to a small opening: it is either closed or open by at least this much.
 SPLITTER_MIN_OPEN_DEG: float = 20.0

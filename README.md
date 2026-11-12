@@ -50,7 +50,14 @@ Status: geometry, meshing and solving run on Iridis (mesh-independence study don
 | `src/cfd/submit.py` | Submits mesh and solve jobs to Slurm, skipping finished work (run through `hpc/submit_cases.sh`) |
 | `src/cfd/runs.py` | Lists every run and its state, read from the run folders |
 | `src/cfd/batch_cases.py` | Turns a table of cases (deflections, α, β) into case files, one per set of deflections |
-| `src/cfd/plot_solves.py` | Plots convergence histories and coefficients against α for one or more downloaded run folders, and prints the slopes |
+
+| Post-processing (`postpro/`, run locally on downloaded run folders) | Purpose |
+|---|---|
+| `postpro/summary.py` | Tables of every set point's coefficients, hinge moments, α and β derivatives, slopes and control effects (change from the clean case); coefficient and hinge-moment plots against α |
+| `postpro/convergence.py` | Convergence table (iterations, gap from the running mean, final ranges and residuals); coefficient and residual histories |
+| `postpro/pressure.py` | Cp along chordwise cuts at spanwise stations, overlaid across runs, with the RMS difference from the last run (for the mesh study) |
+| `postpro/boundary_layer.py` | y⁺ per patch and by area, prism-layer coverage, and skin friction along cuts against flat-plate correlations |
+| `postpro/common.py` | Shared loading: run folders, `results.json`, the wall-surface VTK files, surface cuts |
 
 | HPC file | Purpose |
 |---|---|
@@ -68,7 +75,7 @@ Status: geometry, meshing and solving run on Iridis (mesh-independence study don
 4. **Submit**: `bash hpc/submit_cases.sh configs/cases/<name>.toml`, or a folder of case files. Add `--dry-run` to see what would be submitted, `--mesh-only` to stop before solving, and `--mesh-time` / `--solve-time HH:MM:SS` to change the time limits.
 5. **Monitor**: `squeue -u $USER` lists jobs as `mesh_<case>` and `solve_<case>_<condition>`. `tail -f hpc/runs/<case>/mesh/slurm_<jobid>.out` follows a job.
 6. **Check**: after `module load $(cat .venv-hpc/python_module) && source .venv-hpc/bin/activate`, run `python -m src.cfd.runs` for one line per case (`--failed` for only the failed meshes).
-7. **Plot** (locally): download the run folders, then run `uv run python -m src.cfd.plot_solves <data folder>/<case> ...` in the VS Code terminal. It writes convergence plots per case and one coefficient figure (all six coefficients against α and the drag polar, every case overlaid) to `<first run folder>/plots/`. It also prints the coefficients, the lift-curve and pitching-moment slopes with the static margin, and the sideslip derivatives. `--show` opens the figures.
+7. **Post-process** (locally): download the run folders (each `solve/<condition>/` needs `results.json`, `solve_case.json` and `postProcessing/`; the numbered field folders aren't needed), then from the repository root run, for example, `.venv/Scripts/python.exe -m postpro.summary <data folder>/<case> ...`, and likewise `postpro.convergence`, `postpro.pressure` and `postpro.boundary_layer`. Each takes run folders, a folder of run folders (a whole batch) or a glob pattern, writes tables and plots to `<first path>/postpro/<script>/` (or `--out`), and prints the main tables; `--show` opens the figures. For the mesh study, list the meshes coarse to fine: `pressure.py` compares each run with the last one.
 
 ### 1. Geometry
 - The aircraft is a SolidWorks multibody part. The CFD uses only the outer (wetted) surface. The main body and each control surface are separate bodies: the current model (`cad/uav/`) has a main body and six control surfaces per side (wingtip, leading-edge flap, outboard and inboard trailing-edge flaps, upper and lower splitter flaps).

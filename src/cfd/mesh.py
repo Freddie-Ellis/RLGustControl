@@ -95,6 +95,11 @@ class MeshSettings(StrictModel):
     near_padding_lengths: float = 0.3
     wake_level: int = 5
     wake_lengths: float = 2.0
+    # Extra refinement by distance from the aircraft's skin, as (distance in m, level) pairs, nearest first:
+    # [[0.02, 7], [0.06, 6]] gives level-7 cells within 20 mm of the skin and level 6 out to 60 mm. It resolves
+    # the leading-edge shear layer and vortex above the wing, which otherwise sit in the near box's coarse cells.
+    # Empty: none.
+    surface_distance_levels: list[tuple[float, int]] = []
 
     # Range of flow angles (deg) the mesh must serve; one mesh is solved at every angle in it. The wake leaves
     # along the freestream, so the wake box is widened until the wake stays inside it at every angle: upward
@@ -295,6 +300,10 @@ boundary
     def region_entry(name: str, levels: tuple[int, int]) -> str:
         return f"            {name} {{ level ({levels[0]} {levels[1]}); patchInfo {{ type wall; }} }}"
 
+    distance_levels = " ".join(f"({d:g} {level})" for d, level in s.surface_distance_levels)
+    distance_region = (f"        {SURFACE} {{ mode distance; levels ({distance_levels}); }}\n"
+                       if s.surface_distance_levels else "")
+
     region_levels = "\n".join(
         [region_entry(n, s.surface_levels.get(n, s.fixed_body_level)) for n in fixed_names]
         + [region_entry(n, s.surface_levels.get(n, s.control_surface_level)) for n in surface_names]
@@ -357,7 +366,7 @@ castellatedMeshControls
     {{
         near_box {{ mode inside; levels ((1e15 {s.near_level})); }}
         wake_box {{ mode inside; levels ((1e15 {s.wake_level})); }}
-    }}
+{distance_region}    }}
 
     // A point in the fluid: the mesh is kept on this side of the surfaces.
     locationInMesh {foam_vector(location)};

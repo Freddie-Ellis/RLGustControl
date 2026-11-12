@@ -23,7 +23,6 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=32
 #SBATCH --cpus-per-task=1
-#SBATCH --exclusive=user   # share nodes only with your own jobs: other users' jobs can starve OpenFOAM of memory bandwidth
 #SBATCH --mem=48G   # the ~3M-cell mesh peaked at 12.8 GB; the fine mesh-study mesh has about twice the cells
 #SBATCH --time=02:00:00
 #SBATCH --output=slurm_%x_%j.out   # replaced by submit_cases.sh with <case folder>/mesh/slurm_<jobid>.out

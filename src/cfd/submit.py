@@ -164,11 +164,14 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--solve-time", help="time limit for solve jobs, e.g. 08:00:00")
     parser.add_argument("--mesh-cores", type=int, help="cores (MPI ranks) per mesh job, at most one node (192)")
     parser.add_argument("--solve-cores", type=int, help="cores (MPI ranks) per solve job, at most one node (192)")
-    parser.add_argument("--whole-node", action="store_true",
-                        help="give every job a node to itself; by default (#SBATCH --exclusive=user in the job "
-                             "scripts) your jobs share nodes with each other but never with other users' jobs")
+    # Node sharing. By default jobs share nodes only with your own jobs (other users' jobs can starve OpenFOAM of
+    # memory bandwidth), but a job must then wait for a node with no one else on it.
+    sharing = parser.add_mutually_exclusive_group()
+    sharing.add_argument("--shared", action="store_true",
+                         help="run on any free cores, sharing nodes with other users: starts soonest, speed varies")
+    sharing.add_argument("--whole-node", action="store_true", help="give every job a node to itself")
     args = parser.parse_args(argv)
-    exclusive = ["--exclusive"] if args.whole_node else []
+    exclusive = [] if args.shared else ["--exclusive"] if args.whole_node else ["--exclusive=user"]
     for cores in (args.mesh_cores, args.solve_cores):
         if cores is not None and not 1 <= cores <= NODE_CORES:
             raise SystemExit(f"cores must be 1 to {NODE_CORES} (one node): got {cores}")

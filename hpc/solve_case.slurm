@@ -19,7 +19,6 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=32
 #SBATCH --cpus-per-task=1
-#SBATCH --exclusive=user   # share nodes only with your own jobs: other users' jobs can starve OpenFOAM of memory bandwidth
 #SBATCH --mem=48G
 #SBATCH --time=06:00:00
 #SBATCH --output=slurm_%x_%j.out   # replaced by submit_cases.sh with <solve folder>/slurm_<jobid>.out

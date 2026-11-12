@@ -164,7 +164,11 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--solve-time", help="time limit for solve jobs, e.g. 08:00:00")
     parser.add_argument("--mesh-cores", type=int, help="cores (MPI ranks) per mesh job, at most one node (192)")
     parser.add_argument("--solve-cores", type=int, help="cores (MPI ranks) per solve job, at most one node (192)")
+    parser.add_argument("--whole-node", action="store_true",
+                        help="give every job a node to itself; by default (#SBATCH --exclusive=user in the job "
+                             "scripts) your jobs share nodes with each other but never with other users' jobs")
     args = parser.parse_args(argv)
+    exclusive = ["--exclusive"] if args.whole_node else []
     for cores in (args.mesh_cores, args.solve_cores):
         if cores is not None and not 1 <= cores <= NODE_CORES:
             raise SystemExit(f"cores must be 1 to {NODE_CORES} (one node): got {cores}")
@@ -179,8 +183,9 @@ def main(argv: list[str] | None = None) -> None:
 
     submitter = Submitter(
         dry_run=args.dry_run,
-        mesh_args=([f"--time={args.mesh_time}"] if args.mesh_time else []) + core_args(args.mesh_cores),
-        solve_args=([f"--time={args.solve_time}"] if args.solve_time else []) + core_args(args.solve_cores),
+        mesh_args=([f"--time={args.mesh_time}"] if args.mesh_time else []) + core_args(args.mesh_cores) + exclusive,
+        solve_args=([f"--time={args.solve_time}"] if args.solve_time else []) + core_args(args.solve_cores)
+                   + exclusive,
     )
     for case_file in case_files:
         submitter.submit_case(case_file, args.mesh_only)

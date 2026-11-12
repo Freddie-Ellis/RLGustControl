@@ -7,7 +7,9 @@
 #     bash hpc/submit_cases.sh configs/cases/mesh_study --mesh-only      mesh only
 #     bash hpc/submit_cases.sh configs/cases/batch1/batch1_000.toml --dry-run    show what would be submitted
 # Options: --mesh-only, --dry-run, --mesh-time HH:MM:SS, --solve-time HH:MM:SS,
-#          --mesh-cores N, --solve-cores N (MPI ranks per job, up to 192 = one node; default 32).
+#          --mesh-cores N, --solve-cores N (MPI ranks per job, up to 192 = one node; default 32),
+#          --whole-node (a node to itself per job). By default jobs share nodes only with your own jobs
+#          (#SBATCH --exclusive=user in the job scripts), never with other users' jobs.
 
 set -euo pipefail
 source "$(dirname "$(realpath "$0")")/env.sh"

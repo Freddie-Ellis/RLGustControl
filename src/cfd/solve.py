@@ -51,6 +51,7 @@ import re
 import tomllib
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from pydantic import Field
 
@@ -92,9 +93,11 @@ class SolverSettings(StrictModel):
     n_slices_y: int = Field(default=10, ge=0)
 
     @classmethod
-    def from_toml(cls, path: Path) -> SolverSettings:
+    def from_toml(cls, path: Path, overrides: dict[str, Any] | None = None) -> SolverSettings:
+        """Load settings from a TOML file, with any `overrides` (a case's [solver_overrides]) replacing the
+        file's values. Overrides are checked like the file, so a misspelt name is an error."""
         with open(path, "rb") as f:
-            return cls.model_validate(tomllib.load(f))
+            return cls.model_validate({**tomllib.load(f), **(overrides or {})})
 
     def freestream_k(self) -> float:
         """Turbulent kinetic energy k = 3/2 (I V)^2."""
@@ -503,7 +506,7 @@ def main(argv: list[str] | None = None) -> None:
     condition = FlowCondition(alpha_deg=args.alpha, beta_deg=args.beta)
     check_condition(condition, mesh_settings)
     mesh_dir = args.mesh_dir or Path("hpc/runs") / args.case_file.stem / "mesh"
-    settings = SolverSettings.from_toml(case.solver)
+    settings = SolverSettings.from_toml(case.solver, case.solver_overrides)
     write_solve_case(case.load_geometry(), settings, condition, mesh_dir, args.solve_dir, args.n_procs)
     velocity = [settings.speed * c for c in freestream_direction(condition)]
     print(f"wrote solve case to {args.solve_dir}")

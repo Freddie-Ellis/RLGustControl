@@ -56,7 +56,7 @@ def check_rows(table: pl.DataFrame, geometry: GeometryConfig, mesh: MeshSettings
 
 
 def case_file(name: str, ids: list[int], deflections: dict[str, float], pairs: list[tuple[float, float]],
-              geometry: Path, mesh: Path, solver: Path) -> str:
+              geometry: Path, mesh: Path, solver: Path, keep_fields: bool) -> str:
     lines = [
         f"# Written by src/cfd/batch_cases.py: rows {', '.join(map(str, ids))} of the case table (see index.csv).",
         "",
@@ -68,6 +68,7 @@ def case_file(name: str, ids: list[int], deflections: dict[str, float], pairs: l
         "[deflections_deg]",
         *(f"{surface} = {angle:g}" for surface, angle in deflections.items() if angle != 0),
         "",
+        *([] if keep_fields else ["[solver_overrides]", "keep_fields = false   # only slices and wall surfaces", ""]),
         "[flow]",
         "pairs = [" + ", ".join(f"[{a:g}, {b:g}]" for a, b in pairs) + "]",
     ]
@@ -81,6 +82,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--geometry", type=Path, default=Path("cad/uav/geometry.toml"))
     parser.add_argument("--mesh", type=Path, default=Path("configs/mesh/uav.toml"))
     parser.add_argument("--solver", type=Path, default=Path("configs/solver/uav_rans.toml"))
+    parser.add_argument("--no-fields", action="store_true",
+                        help="don't keep the final 3D fields (keep_fields = false): only the slices and wall surfaces")
     args = parser.parse_args(argv)
 
     table = named_columns(pl.read_csv(args.table))
@@ -99,7 +102,7 @@ def main(argv: list[str] | None = None) -> None:
         pairs = list(zip(rows["aoa_deg"].to_list(), rows["sideslip_deg"].to_list()))
         deflections = {s: rows[c][0] for s, c in zip(ACTUATOR_SURFACES, ACTUATOR_COLUMNS)}
         (args.out_dir / f"{name}.toml").write_text(
-            case_file(name, ids, deflections, pairs, args.geometry, args.mesh, args.solver))
+            case_file(name, ids, deflections, pairs, args.geometry, args.mesh, args.solver, not args.no_fields))
         index += [{"case": i, "case_name": name, "condition": FlowCondition(alpha_deg=a, beta_deg=b).name}
                   for i, (a, b) in zip(ids, pairs)]
     pl.DataFrame(index).write_csv(args.out_dir / "index.csv")

@@ -14,6 +14,7 @@ solver = "configs/solver/uav_rans.toml"
 [deflections_deg]
 
 [mesh_overrides]
+surface_distance_levels = []   # as run: before the vortex refinement became the default
 base_cell_size = 0.384
 
 [flow]

@@ -14,7 +14,9 @@ condition in [flow] on that mesh. Example:
     wingtip_l = 10.0
     [mesh_overrides]                       # optional: change individual mesh settings for this case
     base_cell_size = 0.288
-    [flow]                                 # solved at every combination of these angles
+    [solver_overrides]                     # optional: change individual solver settings for this case
+    keep_fields = false
+    [flow]                                # solved at every combination of these angles
     alpha_deg = [0.0, 10.0, 20.0]
     beta_deg = [0.0, 5.0]
     pairs = [[10.0, -4.0]]                 # optional: extra (alpha, beta) conditions
@@ -67,6 +69,7 @@ class CaseSpec(StrictModel):
     solver: Path | None = None
     deflections_deg: dict[str, float] = {}
     mesh_overrides: dict[str, Any] = {}  # mesh settings that replace those in the `mesh` file
+    solver_overrides: dict[str, Any] = {}  # solver settings that replace those in the `solver` file
     flow: FlowSpec | None = None
 
     @classmethod

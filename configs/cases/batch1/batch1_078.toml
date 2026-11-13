@@ -19,5 +19,8 @@ upr_splitter_flap_l = 56.5
 lwr_splitter_flap_r = 34
 lwr_splitter_flap_l = 56
 
+[solver_overrides]
+keep_fields = false   # only slices and wall surfaces
+
 [flow]
 pairs = [[5, 5]]

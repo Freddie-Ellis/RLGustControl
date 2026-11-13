@@ -16,5 +16,8 @@ ibte_flap_r = -39
 ibte_flap_l = -13
 lwr_splitter_flap_l = 45.5
 
+[solver_overrides]
+keep_fields = false   # only slices and wall surfaces
+
 [flow]
 pairs = [[0, -8]]

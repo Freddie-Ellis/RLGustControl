@@ -1,0 +1,15 @@
+# Snapping test, coarse mesh (base 0.512 m), no deflection, mesh only: as snap_relax, plus one extra surface
+# refinement level on the wingtips, which halves the step where their tapered surfaces cross the cell layers.
+
+description = "Snap test: coarse mesh, more snapping relaxation, wingtips one level finer"
+geometry = "cad/uav/geometry.toml"
+mesh = "configs/mesh/uav.toml"
+
+[deflections_deg]
+
+[mesh_overrides]
+base_cell_size = 0.512
+n_snap_smooth_patch = 5
+n_snap_relax_iter = 10
+n_feature_snap_iter = 15
+surface_levels = { wingtip_r = [9, 10], wingtip_l = [9, 10] }

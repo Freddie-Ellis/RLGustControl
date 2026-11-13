@@ -1,0 +1,78 @@
+# Mesh settings for the UAV. Loaded by src/cfd/mesh.py (MeshSettings.from_toml); a case file can override
+# individual values in its [mesh_overrides] table (see configs/cases/mesh_study/).
+# Lengths in metres. Refinement level n gives cells of base_cell_size / 2**n:
+#   level 5 = 12 mm, 7 = 3 mm, 8 = 1.5 mm, 9 = 0.75 mm.
+# Base cell reduced from 0.512 to 0.384 m (every level 25% finer): ~1.7M -> ~3-3.5M cells.
+
+# Domain, in aircraft lengths (0.52 m): about 10 m upstream, 21 m downstream, 10 m to each side.
+upstream_lengths = 20.0
+downstream_lengths = 40.0
+lateral_lengths = 20.0
+base_cell_size = 0.384
+
+# The background cells are pitched nose-up to the wing's 3 deg incidence, so the flat wing surfaces lie
+# parallel to them. Unpitched, each surface crossed a layer of cells every 28.6 mm (1.5 mm cells), and snapping
+# left a ~0.15 mm dimple at each crossing: rows of dimples behind the leading edge and ahead of the flaps.
+background_pitch_deg = 3.0
+
+# Surface refinement (min, max): min everywhere, max where the surface curves sharply (leading edges).
+# Uniform over the whole skin: 1.5 mm, refined to 0.75 mm at leading-edge curvature.
+fixed_body_level = [8, 9]
+control_surface_level = [8, 9]
+feature_level = 9                # 0.75 mm along sharp edges (trailing edges, tips)
+feature_included_angle = 150.0
+resolve_feature_angle = 30.0
+n_cells_between_levels = 3
+
+# Volume refinement: 12 mm cells around the aircraft and in the near wake (leading-edge vortices).
+near_level = 5
+near_padding_lengths = 0.3
+wake_level = 5
+wake_lengths = 2.0
+
+# Extra refinement by distance from the skin (distance m, level), for the leading-edge shear layer and vortex:
+# 3 mm cells within 60 mm, 6 mm within 100 mm (vortex_5 of configs/cases/vortex_study/). Without it, the medium mesh
+# gave C_L 0.820 at alpha 20 against 0.900-0.926 with any of the five refinements; this one was chosen because the
+# inboard upper-surface pressure (vortex footprint, wanted for tap placement) was still changing up to it. About
+# 4.6M cells against 3.45M; meshing is slower (distance search), so allow --mesh-time 04:00:00.
+surface_distance_levels = [[0.06, 7], [0.10, 6]]
+
+# Flow angles every mesh must serve (deg). The wake box is widened to keep the wake inside it at all of them;
+# the full alpha range costs about 0.8M extra cells compared with a wake box for alpha = beta = 0.
+min_alpha_deg = -10.0
+max_alpha_deg = 30.0
+max_beta_deg = 10.0
+
+# Prism layers on every wall, sized relative to the local surface cell.
+n_layers = 5
+layer_expansion_ratio = 1.2
+final_layer_thickness = 0.5
+min_layer_thickness = 0.1
+
+max_local_cells = 5_000_000
+max_global_cells = 100_000_000
+
+# Iteration counts. Cutting them to 30 / 20 / 10 left 4 bad face tets after snapping and reduced layer
+# coverage from ~85% to ~70%.
+n_snap_solve_iter = 100
+# Snapping relaxation (OpenFOAM's defaults). Snapping backs off where a full move would break the quality
+# limits, leaving dents: on the coarse pitched mesh, up to 0.2 mm on the tapered wingtips and 0.3 mm along the
+# fuselage-wing crease (|y| = 40 mm). Tested in configs/cases/snap_test/: more relaxation (5 / 10 / 15) made no
+# visible difference; wingtips one level finer gave more but smaller dents and doubled the meshing time.
+# Accepted: the dents are small and confined to the wingtips and the crease.
+n_snap_smooth_patch = 3
+n_snap_relax_iter = 5
+n_feature_snap_iter = 10
+snap_tolerance = 2.0
+n_layer_iter = 100   # 50 left 3 bad face tets on the fine study mesh (base 0.288); 100 cleared them.
+                     # mesh_coarse and mesh_medium were made with 50.
+n_relaxed_layer_iter = 20
+
+# The merged skin must have no slits narrower than this (m); the case is not written if it does.
+skin_min_gap = 1e-4
+
+# Pass/fail limits applied by src/cfd/mesh_report.py after checkMesh.
+[acceptance]
+max_non_orthogonality = 70.0
+max_skewness = 4.0
+min_layer_thickness_percent = 80.0

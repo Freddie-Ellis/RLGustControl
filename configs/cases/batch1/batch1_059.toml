@@ -1,0 +1,24 @@
+# Written by src/cfd/batch_cases.py: rows 59 of the case table (see index.csv).
+
+description = "Batch case batch1_059: 1 flow condition(s)"
+geometry = "cad/uav/geometry.toml"
+mesh = "configs/mesh/uav.toml"
+solver = "configs/solver/uav_rans.toml"
+
+[deflections_deg]
+wingtip_r = 8
+wingtip_l = 9
+le_flap_r = 8
+le_flap_l = 47
+obte_flap_r = 0.5
+obte_flap_l = 12
+ibte_flap_r = -49
+ibte_flap_l = 47
+upr_splitter_flap_r = 57
+lwr_splitter_flap_l = 36
+
+[solver_overrides]
+keep_fields = false   # only slices and wall surfaces
+
+[flow]
+pairs = [[24.5, -9.5]]

@@ -6,9 +6,14 @@ keep in step with them (many jobs writing to one shared file at once could also 
 
     python -m src.cfd.runs                 one line per case: mesh state and how many conditions are solved
     python -m src.cfd.runs --failed        only cases whose mesh failed or has not finished
+    python -m src.cfd.runs --csv PATH      write the CSV somewhere other than <runs folder>/runs.csv
+
+Every call also rewrites <runs folder>/runs.csv with every case (whatever --failed shows), one row per case and
+one <surface>_deg column per deflectable surface.
 """
 
 import argparse
+import csv
 import json
 import tomllib
 from pathlib import Path
@@ -16,6 +21,7 @@ from pathlib import Path
 from src.cfd.geometry import StrictModel
 
 RUNS_DIR = Path("hpc/runs")
+CSV_NAME = "runs.csv"  # written inside the runs folder unless --csv is given
 
 
 class RunSummary(StrictModel):
@@ -108,13 +114,38 @@ def format_table(summaries: list[RunSummary]) -> str:
     return "\n".join(lines)
 
 
+def write_csv(summaries: list[RunSummary], path: Path) -> None:
+    """Rewrite `path` with one row per case. Written to a temporary file and then renamed over the old one, so
+    anything reading it (e.g. a download) never sees a half-written file."""
+    surfaces = list(dict.fromkeys(name for s in summaries for name in s.deflections_deg))
+    columns = ["case", "mesh_status", "job_id", "cells", "max_non_orthogonality", "min_layer_percent",
+               "solve_folders", "solved", "converged", *(f"{name}_deg" for name in surfaces), "description"]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.tmp")
+    with temporary.open("w", newline="") as file:
+        writer = csv.DictWriter(file, fieldnames=columns)
+        writer.writeheader()
+        for s in summaries:
+            row = s.model_dump(exclude={"deflections_deg"})
+            # Surfaces a case file doesn't list stay at 0.
+            row |= {f"{name}_deg": s.deflections_deg.get(name, 0.0) for name in surfaces}
+            writer.writerow(row)
+    temporary.replace(path)
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="List CFD runs and their state, from the run folders.")
     parser.add_argument("runs_dir", type=Path, nargs="?", default=RUNS_DIR)
     parser.add_argument("--failed", action="store_true", help="only runs whose mesh failed or has no report")
+    parser.add_argument("--csv", type=Path, help=f"CSV of every run to rewrite (default <runs_dir>/{CSV_NAME})")
     args = parser.parse_args(argv)
 
     summaries = summarise_all(args.runs_dir)
+    if summaries:
+        csv_path: Path = args.csv or args.runs_dir / CSV_NAME
+        write_csv(summaries, csv_path)
+        print(f"{len(summaries)} runs written to {csv_path}
+")
     if args.failed:
         summaries = [s for s in summaries if s.mesh_status != "passed"]
     print(format_table(summaries) if summaries else f"no runs in {args.runs_dir}")

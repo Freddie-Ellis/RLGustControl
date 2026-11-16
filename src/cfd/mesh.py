@@ -422,10 +422,12 @@ mergeTolerance 1e-6;
 debug 0;
 """)
 
-    # Quality limits snappyHexMesh enforces while snapping and adding layers (the OpenFOAM defaults).
-    write_foam_file(case_dir, "system/meshQualityDict", """
+    # Quality limits snappyHexMesh enforces while snapping and adding layers: the OpenFOAM defaults, except that
+    # boundary skewness is held to the acceptance limit. OpenFOAM's default (20) let snappyHexMesh leave a wall face
+    # at 6.2, which checkMesh flags (it uses one limit, 4, for every face) and mesh_report.py then failed.
+    write_foam_file(case_dir, "system/meshQualityDict", f"""
 maxNonOrtho          65;
-maxBoundarySkewness  20;
+maxBoundarySkewness  {s.acceptance.max_skewness:g};
 maxInternalSkewness  4;
 maxConcave           80;
 minVol               1e-13;

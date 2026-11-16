@@ -129,6 +129,9 @@ class MeshSettings(StrictModel):
     # The skin must have no slits narrower than this (m): far too thin to mesh, they would only attract
     # refinement. Checked before writing the case (see skin.check_skin).
     skin_min_gap: float = Field(default=1e-4, gt=0)
+    # False skips that narrow-gap check (the skin must still be closed), to test whether snappyHexMesh copes with
+    # a gap the check refuses. For test cases only, through a case's [mesh_overrides].
+    check_skin_gaps: bool = True
 
     max_local_cells: int = 5_000_000     # per processor, during castellation
     max_global_cells: int = 100_000_000  # whole mesh; castellation stops refining beyond this
@@ -225,7 +228,7 @@ def write_mesh_case(
     if unknown := sorted(set(s.surface_levels) - set(bodies)):
         raise ValueError(f"surface_levels names unknown bodies: {unknown}")
     skin = outer_skin(bodies)
-    problems = check_skin(skin.patches, s.skin_min_gap)
+    problems = check_skin(skin.patches, s.skin_min_gap, check_gaps=s.check_skin_gaps)
     if problems:
         raise ValueError("the aircraft's skin is not fit to mesh (fix the CAD model):\n" + "\n".join(problems))
     write_ascii_stl(case_dir / "constant" / "triSurface" / f"{SURFACE}.stl", skin.patches)

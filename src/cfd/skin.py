@@ -190,18 +190,21 @@ def narrow_gap_faces(skin: dict[str, Triangles], min_gap: float) -> dict[str, Tr
     return found
 
 
-def check_skin(skin: dict[str, Triangles], min_gap: float) -> list[str]:
+def check_skin(skin: dict[str, Triangles], min_gap: float, check_gaps: bool = True) -> list[str]:
     """Problems with the skin that would spoil the mesh, as messages (empty if none).
 
-    Checks that the skin is closed (snappyHexMesh would mesh the inside of the aircraft through any hole) and
-    that no part of it faces another across a gap narrower than `min_gap` (see narrow_gap_faces). A body's
-    narrow-gap faces are only a problem if they add up to more than (10 min_gap)^2 (1 mm^2 for a 0.1 mm gap):
-    the union leaves a few tiny slivers along sharp creases and seams, far too small to affect the mesh.
+    Checks that the skin is closed (snappyHexMesh would mesh the inside of the aircraft through any hole) and,
+    unless `check_gaps` is False, that no part of it faces another across a gap narrower than `min_gap` (see
+    narrow_gap_faces). A body's narrow-gap faces are only a problem if they add up to more than (10 min_gap)^2
+    (1 mm^2 for a 0.1 mm gap): the union leaves a few tiny slivers along sharp creases and seams, far too small to
+    affect the mesh.
     """
     problems: list[str] = []
     open_edges = open_edge_count(torch.cat(list(skin.values())))
     if open_edges:
         problems.append(f"skin is not closed: {open_edges} open edges")
+    if not check_gaps:
+        return problems
 
     narrow = narrow_gap_faces(skin, min_gap)
     for name, faces_found in narrow.items():

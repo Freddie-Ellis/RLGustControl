@@ -1,7 +1,7 @@
 # Does the upper-splitter knuckle wedge actually break the mesh? batch1_038's deflections (right upper splitter at
 # 69.5 deg, right lower splitter closed), which the pre-mesh skin check refuses: the knuckle leaves a ~21 deg wedge,
-# 0.26 mm wide along the span, at x = 351.7, z = -18.4 mm. skin_min_gap is lowered so the check lets it through;
-# everything else is as batch1_038. If checkMesh passes and the layers there look sane in the y = 140 mm slice,
+# 0.26 mm wide along the span, at x = 351.7, z = -18.4 mm. The narrow-gap check is switched off so the case is
+# written anyway (the skin must still be closed); everything else is as batch1_038. If checkMesh passes and the layers there look sane in the y = 140 mm slice,
 # the check, not the geometry, needs changing for this wedge.
 
 description = "Skin gap check bypassed: batch1_038 deflections (upper splitter 69.5, lower closed)"
@@ -23,7 +23,7 @@ upr_splitter_flap_l = 37
 lwr_splitter_flap_l = 26
 
 [mesh_overrides]
-skin_min_gap = 1e-6   # 0.001 mm instead of 0.1 mm: effectively off for the wedge
+check_skin_gaps = false   # lowering skin_min_gap instead also shrinks the crease allowance, (10 gap)^2
 
 [solver_overrides]
 keep_fields = false

@@ -61,8 +61,11 @@ waits on the mesh choice. Collecting results into a dataset is planned.
    [Submission](#submission)).
 5. **Monitor**: `squeue -u $USER` lists jobs as `mesh_<case>` and `solve_<case>_<condition>`.
    `tail -f hpc/runs/<case>/mesh/slurm_<jobid>.out` follows a job.
-6. **Check**: after `source hpc/env.sh && load_python`, run `python -m src.cfd.runs` for one line per case (`--failed`
-   for only the failed meshes).
+6. **Check**: after `source hpc/env.sh && load_python`, run `python -m src.cfd.runs` for one line per case and a count
+   of flow conditions by status (`--failed` for only the failed cases, then each failed condition and why). It also
+   rewrites `hpc/runs/runs.csv` (one row per case) and `hpc/runs/conditions.csv` (one row per flow condition: status
+   converged / not converged / running / queued / FAILED / not started / not submitted, the failure reason, job id,
+   iterations and coefficients).
 7. **Post-process** (locally): download the run folders and run the `postpro/` scripts (see
    [Post-processing](#6-post-processing)).
 

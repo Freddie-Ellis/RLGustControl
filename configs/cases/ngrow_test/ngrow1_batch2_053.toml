@@ -1,0 +1,20 @@
+# What does nGrow 1 cost on a mesh that is fine without it? batch2_053 (outboard trailing-edge flaps at 50 deg)
+# meshed and solved with the default layer_n_grow = 0; this is the same case with layer_n_grow = 1, solved at three
+# of its converged conditions. Compare the two meshes' layer coverage (mesh_report.json) and the coefficients
+# (results.json, postpro.summary / postpro.pressure / postpro.boundary_layer) against batch2_053. Small differences
+# mean nGrow 1 is safe to use wherever layer addition doesn't settle (as in batch2_227).
+
+description = "nGrow test: batch2_053 (obte flaps 50 deg) with layer_n_grow = 1"
+geometry = "cad/uav/geometry.toml"
+mesh = "configs/mesh/uav.toml"
+solver = "configs/solver/uav_rans.toml"
+
+[deflections_deg]
+obte_flap_r = 50
+obte_flap_l = 50
+
+[mesh_overrides]
+layer_n_grow = 1
+
+[flow]
+pairs = [[3, 0], [15, 0], [27, 0]]

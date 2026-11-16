@@ -1,9 +1,10 @@
 """Build an OpenFOAM case that solves one flow condition on a finished mesh with steady RANS.
 
 A case (one set of deflections) is meshed once and solved at every flow condition in its [flow] table, each in
-its own folder hpc/runs/<case name>/solve/<condition>/, e.g. solve/a+08.0_b+00.0/. `write_solve_case` writes:
+its own folder RUNS_DIR/<case name>/solve/<condition>/ (RUNS_DIR in src/cfd/case.py, on scratch), e.g.
+solve/a+08.0_b+00.0/. `write_solve_case` writes:
 
-    constant/polyMesh                  link to the case's mesh (hpc/runs/<case name>/mesh/constant/polyMesh)
+    constant/polyMesh                  link to the case's mesh (RUNS_DIR/<case name>/mesh/constant/polyMesh)
     constant/transportProperties       air viscosity
     constant/turbulenceProperties      k-omega SST
     0/U, p, k, omega, nut              initial and boundary conditions
@@ -41,7 +42,7 @@ Function objects (written to postProcessing/):
                              flow looks physical without the full 3D fields
 
 Run as a script (normally from the Slurm job, hpc/solve_case.slurm):
-    python -m src.cfd.solve configs/cases/batch1/batch1_000.toml hpc/runs/batch1_000/solve/a+08.0_b+00.0 \\
+    python -m src.cfd.solve configs/cases/batch1/batch1_000.toml <runs dir>/batch1_000/solve/a+08.0_b+00.0 \\
         --alpha 8 --beta 0 --n-procs 32
 """
 
@@ -57,7 +58,7 @@ from typing import Any
 
 from pydantic import Field
 
-from src.cfd.case import CaseSpec, FlowCondition
+from src.cfd.case import RUNS_DIR, CaseSpec, FlowCondition
 from src.cfd.foam import foam_vector, write_foam_file
 from src.cfd.geometry import GeometryConfig, StrictModel
 from src.cfd.mesh import MeshSettings
@@ -537,7 +538,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("solve_dir", type=Path)
     parser.add_argument("--alpha", type=float, required=True, help="angle of attack (deg)")
     parser.add_argument("--beta", type=float, default=0.0, help="sideslip (deg)")
-    parser.add_argument("--mesh-dir", type=Path, help="the case's mesh (default hpc/runs/<case name>/mesh)")
+    parser.add_argument("--mesh-dir", type=Path, help="the case's mesh (default <RUNS_DIR>/<case name>/mesh)")
     parser.add_argument("--n-procs", type=int, default=1)
     args = parser.parse_args(argv)
 
@@ -547,7 +548,7 @@ def main(argv: list[str] | None = None) -> None:
         raise SystemExit(f"{args.case_file} has no solver settings (`solver = ...`)")
     condition = FlowCondition(alpha_deg=args.alpha, beta_deg=args.beta)
     check_condition(condition, mesh_settings)
-    mesh_dir = args.mesh_dir or Path("hpc/runs") / args.case_file.stem / "mesh"
+    mesh_dir = args.mesh_dir or RUNS_DIR / args.case_file.stem / "mesh"
     settings = SolverSettings.from_toml(case.solver, case.solver_overrides)
     write_solve_case(case.load_geometry(), settings, condition, mesh_dir, args.solve_dir, args.n_procs)
     velocity = [settings.speed * c for c in freestream_direction(condition)]

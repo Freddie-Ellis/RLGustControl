@@ -1,7 +1,7 @@
 """A CFD case file: everything needed to run one case, so a job takes the case file as its only argument.
 
 Case files are TOML, kept in configs/cases/ (subfolders allowed). The file name (without .toml) is the case
-name, which names its run folder hpc/runs/<case name>/, so it must be unique across all case files. A case is
+name, which names its run folder RUNS_DIR/<case name>/, so it must be unique across all case files. A case is
 one geometry with one set of control surface deflections: it is meshed once, then solved at every flow
 condition in [flow] on that mesh. Example:
 
@@ -24,6 +24,7 @@ condition in [flow] on that mesh. Example:
 Paths are relative to the repository root, which is the working directory the HPC jobs run in.
 """
 
+import getpass
 import tomllib
 from pathlib import Path
 from typing import Any, Self
@@ -31,6 +32,10 @@ from typing import Any, Self
 from pydantic import model_validator
 
 from src.cfd.geometry import GeometryConfig, StrictModel
+
+# Where every case's run folder (mesh and solves) goes on Iridis: the user's scratch space, not the repository,
+# because the runs take over 100 GB, far more than the home quota. Scratch isn't backed up: download what you keep.
+RUNS_DIR = Path("/iridisfs/scratch") / getpass.getuser() / "RLGustControl" / "runs"
 
 
 class FlowCondition(StrictModel):

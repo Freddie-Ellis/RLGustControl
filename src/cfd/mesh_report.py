@@ -8,10 +8,11 @@ What is checked:
       the extra checks that only `-allGeometry` runs (concave cells, small determinant, ...) are warnings;
     - maximum non-orthogonality and skewness against the limits in the mesh settings' [acceptance] table;
     - prism-layer coverage per wall from snappyHexMesh's final layer table (low coverage is a warning, since
-      layers often collapse at sharp trailing edges without making the mesh unusable).
+      layers often collapse at sharp trailing edges without making the mesh unusable);
+    - narrow gaps in the skin found before meshing (mesh_case.json), repeated here as warnings.
 
 Run by hand on a mesh folder:
-    python -m src.cfd.mesh_report hpc/runs/<case name>/mesh
+    python -m src.cfd.mesh_report <runs dir>/<case name>/mesh      (<runs dir>: RUNS_DIR in src/cfd/case.py)
 """
 
 import argparse
@@ -215,6 +216,9 @@ def main(argv: list[str] | None = None) -> None:
     acceptance = MeshAcceptance.model_validate(info["settings"]["acceptance"])
 
     report = build_report(args.case_dir, acceptance)
+    # Narrow gaps found in the skin before meshing (mesh.py), so they sit next to the mesh quality they may explain.
+    gaps = [f"skin gap (pre-mesh check): {w}" for w in info.get("skin_gap_warnings", [])]
+    report = report.model_copy(update={"warnings": [*report.warnings, *gaps]})
     (args.case_dir / "mesh_report.json").write_text(report.model_dump_json(indent=2))
     print(format_report(report))
     sys.exit(0 if report.passed else 1)

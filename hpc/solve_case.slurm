@@ -2,9 +2,11 @@
 # Solve one flow condition of a meshed case with steady RANS (simpleFoam, k-omega SST) on Iridis 6.
 #
 # Submitted by hpc/submit_cases.sh (see src/cfd/submit.py), one job per flow condition in the case's [flow]
-# table, each waiting for the case's mesh job if that is still to run. Arguments: case file, alpha, beta (deg).
+# table, each waiting for the case's mesh job if that is still to run. Arguments: case file, alpha, beta (deg),
+# the solve folder <runs dir>/<case name>/solve/<condition> and the case's mesh folder <runs dir>/<case name>/mesh
+# (RUNS_DIR in src/cfd/case.py, on scratch).
 #
-# Writes hpc/runs/<case name>/solve/<condition>/ (e.g. solve/a+08.0_b+00.0/):
+# Writes the solve folder (e.g. solve/a+08.0_b+00.0/):
 #   slurm_<jobid>.out          the job's output (this log)
 #   log.*                      one log per step
 #   solve_case.json            every setting used, the flow condition and the job id
@@ -41,20 +43,19 @@ source "${SLURM_SUBMIT_DIR}/hpc/env.sh"   # Slurm runs a copy of this script, so
 load_openfoam
 load_python
 
-case_file="$(cd "${SLURM_SUBMIT_DIR}" && realpath "${1:?usage: solve_case.slurm <case file> <alpha> <beta>}")"
-alpha="${2:?missing alpha}"
-beta="${3:?missing beta}"
-case_name="$(basename "${case_file}" .toml)"
-mesh_dir="${repo_root}/hpc/runs/${case_name}/mesh"
+usage="usage: solve_case.slurm <case file> <alpha> <beta> <solve dir> <mesh dir>"
+case_file="$(cd "${SLURM_SUBMIT_DIR}" && realpath "${1:?${usage}}")"
+alpha="${2:?${usage}}"
+beta="${3:?${usage}}"
+solve_dir="${4:?${usage}}"
+mesh_dir="${5:?${usage}}"
 
 print_environment
 echo "Case file:     ${case_file}"
 echo "Condition:     alpha ${alpha} deg, beta ${beta} deg"
+echo "Solve dir:     ${solve_dir}"
 
 cd "${repo_root}"
-condition="$(python -c "from src.cfd.case import FlowCondition as F; print(F(alpha_deg=${alpha}, beta_deg=${beta}).name)")"
-solve_dir="${repo_root}/hpc/runs/${case_name}/solve/${condition}"
-echo "Solve dir:     ${solve_dir}"
 if [ ! -f "${mesh_dir}/mesh_report.json" ] || ! grep -q '"passed": true' "${mesh_dir}/mesh_report.json"; then
     echo "The case's mesh (${mesh_dir}) has not passed; nothing to solve on."
     exit 1

@@ -24,11 +24,12 @@ How snappyHexMesh builds the mesh, and how the settings map onto it:
     3. Layers: push the mesh away from the walls and insert thin prism cells to resolve the boundary layer.
 
 Before writing the STL, the touching bodies are merged into the aircraft's outer skin (their boolean union,
-see skin.py), so that faces hidden between bodies don't trigger refinement along every seam. The skin is checked
-first (closed, no slits narrower than skin_min_gap) and the case is not written if it fails.
+see skin.py), so that faces hidden between bodies don't trigger refinement along every seam. The skin must be
+closed or the case is not written; gaps narrower than skin_min_gap are reported as warnings.
 
 Run as a script (normally from the Slurm job), with a case file from configs/cases/:
-    python -m src.cfd.mesh configs/cases/batch1/batch1_036.toml hpc/runs/batch1_036/mesh --n-procs 32
+    python -m src.cfd.mesh configs/cases/batch1/batch1_036.toml <runs dir>/batch1_036/mesh --n-procs 32
+(<runs dir> is RUNS_DIR in src/cfd/case.py, on scratch.)
 """
 
 import argparse
@@ -48,7 +49,7 @@ from src.cfd.case import CaseSpec
 from src.cfd.deflect import deflected_bodies
 from src.cfd.foam import foam_vector, write_foam_file
 from src.cfd.geometry import GeometryConfig, StrictModel
-from src.cfd.skin import check_skin, outer_skin
+from src.cfd.skin import check_skin, narrow_gaps, outer_skin
 from src.cfd.stl import write_ascii_stl, write_obj_edges
 
 SURFACE = "aircraft"  # name of the combined STL and of its snappyHexMesh geometry entry
@@ -126,12 +127,15 @@ class MeshSettings(StrictModel):
     n_layer_iter: int = 50           # layer addition: overall iterations (nLayerIter)
     n_relaxed_layer_iter: int = 20   # ...after which the relaxed quality limits apply (nRelaxedIter)
 
-    # The skin must have no slits narrower than this (m): far too thin to mesh, they would only attract
-    # refinement. Checked before writing the case (see skin.check_skin).
+    # Gaps in the skin narrower than this (m) are reported as warnings before the case is written (see
+    # skin.narrow_gaps): a closed slit could be meshed through, but an open wedge meshes fine, so checkMesh judges.
     skin_min_gap: float = Field(default=1e-4, gt=0)
-    # False skips that narrow-gap check (the skin must still be closed), to test whether snappyHexMesh copes with
-    # a gap the check refuses. For test cases only, through a case's [mesh_overrides].
-    check_skin_gaps: bool = True
+
+    # Layer addition: faces next to a face that can't be extruded also get no layers, this many faces deep
+    # (nGrow). 0 keeps layers wherever possible. 1 stops a bad face hopping between neighbours from one layer
+    # iteration to the next near tight corners (batch2_227, every surface fully deflected), at the cost of fewer
+    # layers around those corners; set it per case, through [mesh_overrides].
+    layer_n_grow: int = Field(default=0, ge=0)
 
     max_local_cells: int = 5_000_000     # per processor, during castellation
     max_global_cells: int = 100_000_000  # whole mesh; castellation stops refining beyond this
@@ -228,9 +232,12 @@ def write_mesh_case(
     if unknown := sorted(set(s.surface_levels) - set(bodies)):
         raise ValueError(f"surface_levels names unknown bodies: {unknown}")
     skin = outer_skin(bodies)
-    problems = check_skin(skin.patches, s.skin_min_gap, check_gaps=s.check_skin_gaps)
+    problems = check_skin(skin.patches)
     if problems:
         raise ValueError("the aircraft's skin is not fit to mesh (fix the CAD model):\n" + "\n".join(problems))
+    gap_warnings = narrow_gaps(skin.patches, s.skin_min_gap)
+    for warning in gap_warnings:
+        print(f"warning: narrow gap in the skin (meshing anyway; checkMesh judges): {warning}")
     write_ascii_stl(case_dir / "constant" / "triSurface" / f"{SURFACE}.stl", skin.patches)
     # Sharp edges, for snappyHexMesh to refine along and snap to. They are chosen in skin.py rather than by
     # surfaceFeatureExtract, which would also pick up the tiny steps along every seam between bodies, and
@@ -398,7 +405,7 @@ addLayersControls
     expansionRatio      {s.layer_expansion_ratio:g};
     finalLayerThickness {s.final_layer_thickness:g};
     minThickness        {s.min_layer_thickness:g};
-    nGrow               0;
+    nGrow               {s.layer_n_grow};
     featureAngle        130;
     slipFeatureAngle    30;
     nRelaxIter          5;
@@ -514,6 +521,7 @@ wallDist             { method meshWave; }
         "background_axes": axes.tolist(),  # rows: the background mesh's x, y, z axes in model coordinates
         "background_cells": [nx, ny, nz],
         "location_in_mesh": location,
+        "skin_gap_warnings": gap_warnings,  # repeated in mesh_report.json, as warnings
         "settings": settings.model_dump(),
     }
     (case_dir / "mesh_case.json").write_text(json.dumps(info, indent=2))

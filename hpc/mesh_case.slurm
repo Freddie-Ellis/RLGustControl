@@ -4,10 +4,11 @@
 # Submitted by hpc/submit_cases.sh (see src/cfd/submit.py), from the repository root, with this job's output in
 # the case's folder:
 #     bash hpc/submit_cases.sh configs/cases/batch1/batch1_000.toml
-# The only argument is a case file (see configs/cases/), which names the geometry, the mesh settings and the
-# control surface deflections. One-off setup first: bash hpc/setup_python.sh (on the login node).
+# Arguments: a case file (see configs/cases/), which names the geometry, the mesh settings and the control
+# surface deflections, and the folder to mesh in, <runs dir>/<case name>/mesh (RUNS_DIR in src/cfd/case.py, on
+# scratch). One-off setup first: bash hpc/setup_python.sh (on the login node).
 #
-# Everything for a case goes in hpc/runs/<case name>/ (the case file's name); this job writes mesh/:
+# This job writes the mesh folder:
 #   slurm_<jobid>.out          the job's output (this log)
 #   log.*                      one log per step
 #   mesh_case.json             every setting used, the job id and when the case was written
@@ -33,9 +34,8 @@ source "${SLURM_SUBMIT_DIR}/hpc/env.sh"   # Slurm runs a copy of this script, so
 load_openfoam
 load_python
 
-case_file="$(cd "${SLURM_SUBMIT_DIR}" && realpath "${1:?usage: bash hpc/submit_cases.sh <case file>}")"
-case_name="$(basename "${case_file}" .toml)"
-case_dir="${repo_root}/hpc/runs/${case_name}/mesh"
+case_file="$(cd "${SLURM_SUBMIT_DIR}" && realpath "${1:?usage: mesh_case.slurm <case file> <mesh dir>}")"
+case_dir="${2:?missing the mesh folder (submit with bash hpc/submit_cases.sh)}"
 mkdir -p "${case_dir}"
 
 print_environment

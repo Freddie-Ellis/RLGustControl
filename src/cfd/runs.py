@@ -1,9 +1,9 @@
 """List every CFD run and the state of each of its flow conditions, built from the run folders themselves.
 
-Each case has one folder, hpc/runs/<case name>/ (see src/cfd/submit.py), holding its case file, its mesh and
-one folder per solved flow condition. This module reads those folders (and squeue, for jobs still waiting or
-running), so there is no separate index file to keep in step with them (many jobs writing to one shared file at
-once could also corrupt it).
+Each case has one folder, RUNS_DIR/<case name>/ (on scratch; see src/cfd/case.py and src/cfd/submit.py), holding
+its case file, its mesh and one folder per solved flow condition. This module reads those folders (and squeue,
+for jobs still waiting or running), so there is no separate index file to keep in step with them (many jobs
+writing to one shared file at once could also corrupt it).
 
     python -m src.cfd.runs                  one line per case, then a count of flow conditions by status
     python -m src.cfd.runs --failed         only cases with a failed or unfinished mesh or a failed condition,
@@ -36,10 +36,9 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from src.cfd.case import CaseSpec
+from src.cfd.case import RUNS_DIR, CaseSpec
 from src.cfd.geometry import StrictModel
 
-RUNS_DIR = Path("hpc/runs")
 RUNS_CSV = "runs.csv"
 CONDITIONS_CSV = "conditions.csv"
 STATUSES: tuple[str, ...] = ("converged", "not converged", "running", "queued", "FAILED", "not started",

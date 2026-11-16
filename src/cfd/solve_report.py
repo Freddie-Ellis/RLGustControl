@@ -19,7 +19,7 @@ of its running mean: the test OpenFOAM's runTimeControl uses to stop the run (se
 oscillating, so it can be judged or rerun.
 
 Run by hand on a solve folder:
-    python -m src.cfd.solve_report hpc/runs/<case name>/solve/a+08.0_b+00.0
+    python -m src.cfd.solve_report <runs dir>/<case name>/solve/a+08.0_b+00.0   (<runs dir>: RUNS_DIR in src/cfd/case.py)
 """
 
 import argparse

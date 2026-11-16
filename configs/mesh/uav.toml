@@ -68,7 +68,9 @@ n_layer_iter = 100   # 50 left 3 bad face tets on the fine study mesh (base 0.28
                      # mesh_coarse and mesh_medium were made with 50.
 n_relaxed_layer_iter = 20
 
-# The merged skin must have no slits narrower than this (m); the case is not written if it does.
+# Gaps in the merged skin narrower than this (m) are reported as warnings before meshing (the skin must still be
+# closed). They used to stop the case, but the upper splitter's open hinge wedge (upper >= ~40 deg, lower closed)
+# meshes and passes checkMesh (configs/cases/splitter_test/), so checkMesh and mesh_report.py now judge.
 skin_min_gap = 1e-4
 
 # Pass/fail limits applied by src/cfd/mesh_report.py after checkMesh.

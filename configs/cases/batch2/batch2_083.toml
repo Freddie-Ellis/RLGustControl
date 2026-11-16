@@ -6,8 +6,8 @@ mesh = "configs/mesh/uav.toml"
 solver = "configs/solver/uav_rans.toml"
 
 [deflections_deg]
-le_flap_r = -25
-le_flap_l = -25
+le_flap_r = -15
+le_flap_l = -15
 
 [flow]
 pairs = [[-3, 0], [3, 0], [9, 0], [15, 0], [21, 0], [27, 0]]

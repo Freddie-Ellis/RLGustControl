@@ -8,7 +8,7 @@ numbered actuator_0_deg ... actuator_11_deg in ACTUATOR_SURFACES order (as in cf
 Rows with the same actuator angles share a mesh, so they become one case file (one mesh) solved at
 each of their (alpha, beta) pairs. Case files are named <folder name>_<first case id>, e.g. batch1_036.toml, and
 index.csv in the folder maps every row's case id to its case file and condition folder, i.e. to its results in
-hpc/runs/<case file>/solve/<condition>/results.json. Submit them all with
+RUNS_DIR/<case file>/solve/<condition>/results.json (RUNS_DIR in src/cfd/case.py). Submit them all with
     bash hpc/submit_cases.sh configs/cases/batch1
 
 Every row is checked against the geometry's deflection limits and the mesh's angle range before anything is

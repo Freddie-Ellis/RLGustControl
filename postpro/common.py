@@ -1,9 +1,9 @@
 """Shared code for the post-processing scripts: finding run folders, reading results and wall surfaces,
 cutting the wall surface at a spanwise station, and printing tables.
 
-A run folder is a downloaded hpc/runs/<case name>/: case.toml, optionally mesh/, and solve/<condition>/, each
-with results.json, solve_case.json and postProcessing/. Every script accepts run folders, folders of run
-folders (e.g. a whole downloaded batch) and glob patterns.
+A run folder is a downloaded <runs dir>/<case name>/ (RUNS_DIR in src/cfd/case.py, on Iridis scratch): case.toml,
+optionally mesh/, and solve/<condition>/, each with results.json, solve_case.json and postProcessing/. Every
+script accepts run folders, folders of run folders (e.g. a whole downloaded batch) and glob patterns.
 """
 
 import argparse

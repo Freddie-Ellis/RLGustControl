@@ -6,7 +6,8 @@ Run on the Iridis login node through hpc/submit_cases.sh, which loads the Python
     bash hpc/submit_cases.sh configs/cases/mesh_study --mesh-only      mesh, don't solve
     bash hpc/submit_cases.sh configs/cases/batch1/batch1_000.toml --dry-run    show what would be submitted
 
-Everything for a case goes in hpc/runs/<case name>/ (the case file's name):
+Everything for a case goes in RUNS_DIR/<case name>/ (on scratch; see src/cfd/case.py), named after the case file.
+Each job is given its folder as an argument, so the Slurm scripts hold no paths of their own:
     case.toml          the case file as last submitted
     mesh/              the mesh job (hpc/mesh_case.slurm)
     solve/<condition>/ one solve job per flow condition (hpc/solve_case.slurm), e.g. solve/a+08.0_b+00.0/
@@ -30,11 +31,9 @@ import subprocess
 import tomllib
 from pathlib import Path
 
-from src.cfd.case import CaseSpec
+from src.cfd.case import RUNS_DIR, CaseSpec
 from src.cfd.mesh import MeshSettings
 from src.cfd.solve import check_condition
-
-RUNS_DIR = Path("hpc/runs")
 
 
 def queued_jobs() -> dict[str, str]:
@@ -132,7 +131,7 @@ class Submitter:
             if not self.dry_run:
                 keep_previous(mesh_dir)
             mesh_job = self.sbatch(f"mesh_{name}", mesh_dir.resolve(), "hpc/mesh_case.slurm",
-                                   [str(case_file)], self.mesh_args)
+                                   [str(case_file), str(mesh_dir.resolve())], self.mesh_args)
             print(f"{name}: submitted mesh job {mesh_job}")
         if not self.dry_run:
             run_dir.mkdir(parents=True, exist_ok=True)
@@ -152,7 +151,8 @@ class Submitter:
                 keep_previous(solve_dir)
             wait = [f"--dependency=afterok:{mesh_job}", "--kill-on-invalid-dep=yes"] if mesh_job else []
             job = self.sbatch(job_name, solve_dir.resolve(), "hpc/solve_case.slurm",
-                              [str(case_file), f"{condition.alpha_deg:g}", f"{condition.beta_deg:g}"],
+                              [str(case_file), f"{condition.alpha_deg:g}", f"{condition.beta_deg:g}",
+                               str(solve_dir.resolve()), str(mesh_dir.resolve())],
                               wait + self.solve_args)
             print(f"{name} {condition.name}: submitted solve job {job}" + (f" (after mesh job {mesh_job})"
                                                                           if mesh_job else ""))

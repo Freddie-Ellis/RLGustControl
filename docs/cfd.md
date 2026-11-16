@@ -60,12 +60,12 @@ waits on the mesh choice. Collecting results into a dataset is planned.
 4. **Submit**: `bash hpc/submit_cases.sh configs/cases/<name>.toml`, or a folder of case files (options in
    [Submission](#submission)).
 5. **Monitor**: `squeue -u $USER` lists jobs as `mesh_<case>` and `solve_<case>_<condition>`.
-   `tail -f hpc/runs/<case>/mesh/slurm_<jobid>.out` follows a job.
+   `tail -f /iridisfs/scratch/$USER/RLGustControl/runs/<case>/mesh/slurm_<jobid>.out` follows a job.
 6. **Check**: after `source hpc/env.sh && load_python`, run `python -m src.cfd.runs` for one line per case and a count
    of flow conditions by status (`--failed` for only the failed cases, then each failed condition and why). It also
-   rewrites `hpc/runs/runs.csv` (one row per case) and `hpc/runs/conditions.csv` (one row per flow condition: status
+   rewrites `runs.csv` (one row per case) and `conditions.csv` (one row per flow condition: status
    converged / not converged / running / queued / FAILED / not started / not submitted, the failure reason, job id,
-   iterations and coefficients).
+   iterations and coefficients) in the runs folder.
 7. **Post-process** (locally): download the run folders and run the `postpro/` scripts (see
    [Post-processing](#6-post-processing)).
 
@@ -118,8 +118,11 @@ points in swapped order; the same positive angle then gives the same physical mo
 For each case the deflected bodies are merged into one closed surface, their boolean union (the `manifold3d` library),
 which cuts the triangles where bodies meet and keeps only the outside, so no hidden faces are left for snappyHexMesh to
 refine around. Each triangle remembers which body it came from, and the skin is written as `aircraft.stl` with one
-named solid (patch) per body. The skin is then checked: it must be closed, and no part of it may face another across a
-gap narrower than 0.1 mm. A failure names the bodies and the location. The skin and its feature edges are in each mesh
+named solid (patch) per body. The skin is then checked: it must be closed, or the case is not written. Places where it
+faces itself across a gap narrower than 0.1 mm are only warnings (printed, and repeated in `mesh_report.json`), naming
+the body and the location: the upper splitter's hinge knuckle leaves such an open wedge whenever the upper splitter is
+at about 40° or more with the lower one closed, and that mesh passed checkMesh (`configs/cases/splitter_test/`).
+checkMesh and the mesh report decide. The skin and its feature edges are in each mesh
 folder (`constant/triSurface/aircraft.stl`, `aircraft_features.obj`) for viewing in ParaView.
 
 **Feature edges** (where snappyHexMesh refines and snaps to sharp edges) are chosen in `skin.py`, not by
@@ -214,10 +217,13 @@ pairs = [[10.0, -4.0]]                    # optional: extra (alpha, beta) condit
 ```
 
 Everything for a case goes in one folder named after it, with inputs and results in files inside rather than in folder
-names:
+names. The case folders live on scratch, in `/iridisfs/scratch/<username>/RLGustControl/runs/` (`RUNS_DIR` in
+`src/cfd/case.py`), not in the repository: the runs take over 100 GB, far more than the home quota. `submit.py`
+passes each Slurm job its folder, so the job scripts hold no paths of their own. Scratch isn't backed up, so
+download what you need to keep.
 
 ```
-hpc/runs/<case name>/
+<runs dir>/<case name>/
     case.toml                    the case file as last submitted
     mesh/                        slurm_<jobid>.out, log.*, mesh_case.json, mesh_report.json, postProcessing/
     mesh.previous/               the last failed or unfinished mesh attempt, if any
@@ -259,8 +265,10 @@ onto the same nodes.
   `src/ml/taps/cfd_cases/cfd_cases2.csv`): a clean-wing map over α and β; symmetric deflection sweeps at
   α = −3, 3, 9, 15, 21, 27° (pitch and lift authority); one-sided (right-side) sweeps at α = 9, 21° and β = −10, 0, 10°
   (roll and yaw authority, the left side following by mirroring); and one combined full-deflection case. The upper and
-  lower splitters always move together, up to 60°. Positive α only is run, with mostly the lift-reducing deflection
-  direction, using the wing's top-bottom symmetry about α = −3°. Keeps the full 3D fields as well as the slices.
+  lower splitters always move together, up to 60°. The leading-edge flaps are swept at ±15 and ±30° only (changed from
+  ±25 and ±50° on 16 Nov 2026; their travel in `geometry.toml` is still ±50°, so batch 1 is unaffected). Positive α
+  only is run, with mostly the lift-reducing deflection direction, using the wing's top-bottom symmetry about
+  α = −3°. Keeps the full 3D fields as well as the slices.
 - **Batch 1** (`configs/cases/batch1/`, 121 meshes, 156 solves): an α sweep, a β sweep and a Latin hypercube over the
   12 actuators, α and β, from `src/ml/taps/latin_hyper.py`. Keeps only the slices and wall surfaces
   (`keep_fields = false`, written with `batch_cases.py --no-fields`). Its splitters still move independently.

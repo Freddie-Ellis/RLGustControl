@@ -144,8 +144,7 @@ def main(argv: list[str] | None = None) -> None:
     if summaries:
         csv_path: Path = args.csv or args.runs_dir / CSV_NAME
         write_csv(summaries, csv_path)
-        print(f"{len(summaries)} runs written to {csv_path}
-")
+        print(f"{len(summaries)} runs written to {csv_path}\n")
     if args.failed:
         summaries = [s for s in summaries if s.mesh_status != "passed"]
     print(format_table(summaries) if summaries else f"no runs in {args.runs_dir}")

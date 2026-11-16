@@ -5,13 +5,6 @@ geometry = "cad/uav/geometry.toml"
 mesh = "configs/mesh/uav.toml"
 solver = "configs/solver/uav_rans.toml"
 
-# Added by hand (re-add if batch_cases.py rewrites this file). With every surface deflected, layer addition never
-# settled near the tight corners: a bad face tet hopped between neighbouring faces for 60 iterations and one was
-# left at the 100-iteration limit, failing checkMesh. nGrow 1 also drops layers on the faces around any face that
-# can't be extruded, which stops the hopping. Only this case: elsewhere it would cost layers for nothing.
-[mesh_overrides]
-layer_n_grow = 1
-
 [deflections_deg]
 wingtip_r = 50
 wingtip_l = 50

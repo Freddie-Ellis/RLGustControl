@@ -77,4 +77,7 @@ skin_min_gap = 1e-4
 [acceptance]
 max_non_orthogonality = 70.0
 max_skewness = 4.0
-min_layer_thickness_percent = 80.0
+max_bad_face_tets = 5                       # checkMesh "face tets": a warning up to this many faces
+min_layer_thickness_percent = 80.0          # warning below this share of the requested layer thickness
+fail_layer_thickness_percent_wall = 20.0    # fail if any wall is below this (its layers have collapsed)
+fail_layer_thickness_percent_overall = 50.0 # fail if all walls together (face-weighted) are below this

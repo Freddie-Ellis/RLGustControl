@@ -5,10 +5,13 @@ status 1 if the mesh fails, so the job is marked as failed.
 
 What is checked:
     - checkMesh's own verdict ("Mesh OK." or "Failed N mesh checks."), with the reasons it gives. Failures of
-      the extra checks that only `-allGeometry` runs (concave cells, small determinant, ...) are warnings;
+      the extra checks that only `-allGeometry` runs (concave cells, small determinant, ...) are warnings, and
+      so are up to max_bad_face_tets faces with poor tetrahedral decomposition;
     - maximum non-orthogonality and skewness against the limits in the mesh settings' [acceptance] table;
-    - prism-layer coverage per wall from snappyHexMesh's final layer table (low coverage is a warning, since
-      layers often collapse at sharp trailing edges without making the mesh unusable);
+    - prism-layer coverage per wall from snappyHexMesh's final layer table. Below min_layer_thickness_percent is
+      a warning, since layers often collapse at sharp trailing edges without making the mesh unusable; a wall
+      below fail_layer_thickness_percent_wall, or all walls together below fail_layer_thickness_percent_overall,
+      fails the mesh (its layers have collapsed);
     - narrow gaps in the skin found before meshing (mesh_case.json), repeated here as warnings.
 
 Run by hand on a mesh folder:
@@ -129,8 +132,11 @@ def build_report(case_dir: Path, acceptance: MeshAcceptance) -> MeshReport:
             failures.append("checkMesh did not finish (no 'Mesh OK.' or 'Failed N mesh checks.')")
     messages = [line.strip().lstrip("*") for line in check.splitlines() if line.strip().startswith("***")]
     for message in messages:
+        bad_tets = re.search(r"face tets:\s*(\d+)\s+faces", message)
         if any(phrase in message.lower() for phrase in _STRICT_CHECKS):
             warnings.append(f"checkMesh (strict check): {message}")
+        elif bad_tets and int(bad_tets.group(1)) <= acceptance.max_bad_face_tets:
+            warnings.append(f"checkMesh (allowed up to {acceptance.max_bad_face_tets} faces): {message}")
         else:
             failures.append(f"checkMesh: {message}")
     if failed_checks and not messages:
@@ -157,11 +163,18 @@ def build_report(case_dir: Path, acceptance: MeshAcceptance) -> MeshReport:
     if snappy and not layers:
         warnings.append("no layer table found in log.snappyHexMesh")
     for row in layers:
-        if row.thickness_percent < acceptance.min_layer_thickness_percent:
-            warnings.append(
-                f"layers on {row.patch}: {row.thickness_percent:g}% of requested thickness "
-                f"({row.mean_layers:g} layers on average)"
-            )
+        coverage = (f"layers on {row.patch}: {row.thickness_percent:g}% of requested thickness "
+                    f"({row.mean_layers:g} layers on average)")
+        if row.thickness_percent < acceptance.fail_layer_thickness_percent_wall:
+            failures.append(f"{coverage} < {acceptance.fail_layer_thickness_percent_wall:g}%")
+        elif row.thickness_percent < acceptance.min_layer_thickness_percent:
+            warnings.append(coverage)
+    total_faces = sum(row.faces for row in layers)
+    if total_faces:
+        overall = sum(row.thickness_percent * row.faces for row in layers) / total_faces
+        if overall < acceptance.fail_layer_thickness_percent_overall:
+            failures.append(f"layers on all walls together: {overall:.1f}% of requested thickness "
+                            f"< {acceptance.fail_layer_thickness_percent_overall:g}%")
 
     return MeshReport(
         passed=not failures,

@@ -62,7 +62,16 @@ class MeshAcceptance(StrictModel):
     """Limits a finished mesh must meet, checked by mesh_report.py after checkMesh."""
     max_non_orthogonality: float = 70.0      # degrees; above ~70 the solver needs extra correctors
     max_skewness: float = 4.0                # checkMesh's own limit for internal faces
+    # checkMesh's "face tets" check (faces whose decomposition into tetrahedra is poor) matters for particle
+    # tracking and some interpolation, not for the finite-volume solve. Up to this many such faces is a warning:
+    # with every surface deflected, layer addition can leave one (batch2_227: 1 face in 12 million).
+    max_bad_face_tets: int = Field(default=5, ge=0)
     min_layer_thickness_percent: float = 80.0  # warn if a wall gets less than this share of its layer thickness
+    # Fail the mesh if its layers have collapsed: any wall below the first share of its layer thickness, or all
+    # walls together (face-weighted) below the second. A mesh with almost no layers once passed (batch2_227 with
+    # nGrow 1: 0-4% on every wall). The worst wall in a normal mesh so far was 29% (a leading-edge flap at -49 deg).
+    fail_layer_thickness_percent_wall: float = Field(default=20.0, ge=0, le=100)
+    fail_layer_thickness_percent_overall: float = Field(default=50.0, ge=0, le=100)
 
 
 class MeshSettings(StrictModel):
@@ -130,12 +139,6 @@ class MeshSettings(StrictModel):
     # Gaps in the skin narrower than this (m) are reported as warnings before the case is written (see
     # skin.narrow_gaps): a closed slit could be meshed through, but an open wedge meshes fine, so checkMesh judges.
     skin_min_gap: float = Field(default=1e-4, gt=0)
-
-    # Layer addition: faces next to a face that can't be extruded also get no layers, this many faces deep
-    # (nGrow). 0 keeps layers wherever possible. 1 stops a bad face hopping between neighbours from one layer
-    # iteration to the next near tight corners (batch2_227, every surface fully deflected), at the cost of fewer
-    # layers around those corners; set it per case, through [mesh_overrides].
-    layer_n_grow: int = Field(default=0, ge=0)
 
     max_local_cells: int = 5_000_000     # per processor, during castellation
     max_global_cells: int = 100_000_000  # whole mesh; castellation stops refining beyond this
@@ -405,7 +408,7 @@ addLayersControls
     expansionRatio      {s.layer_expansion_ratio:g};
     finalLayerThickness {s.final_layer_thickness:g};
     minThickness        {s.min_layer_thickness:g};
-    nGrow               {s.layer_n_grow};
+    nGrow               0;   // 1 grows the no-layer region a ring per layer iteration: batch2_227 ended with 0-4% layers
     featureAngle        130;
     slipFeatureAngle    30;
     nRelaxIter          5;

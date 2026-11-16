@@ -160,7 +160,11 @@ the outside, which every seam step fails.
   angle range in the mesh settings (`min_alpha_deg`, `max_alpha_deg`, `max_beta_deg`: currently α from −10° to 30°, β
   up to ±10°). So one mesh serves every flow direction in that range, and flow conditions outside it are rejected.
 - The job finishes with `checkMesh` and `mesh_report.json`: cell counts, maximum non-orthogonality (limit 70°) and
-  skewness (limit 4), and prism-layer coverage per wall (warning below 80%). The job fails if the mesh fails.
+  skewness (limit 4; snappyHexMesh is held to it on wall faces too), and prism-layer coverage per wall: a warning
+  below 80%, a failure if any wall is below 20% or all walls together below 50%. Up to 5 faces failing checkMesh's
+  "face tets" check are a warning (it matters for particle tracking, not the solve). The job fails if the mesh fails.
+  `nGrow` stays 0: at 1, snappyHexMesh widens the no-layer region by a ring of faces on every layer iteration, and the
+  fully deflected batch2_227 ended with 0–4% layers on every wall.
   `postProcessing/meshSlices/` holds cutting planes and the wall surfaces with quality fields, small enough to download
   and open in ParaView. Faces that checkMesh flags as bad are written as VTK under `postProcessing/constant/`.
 - On a quiet node and 32 cores, the coarse (1.8M cells), medium (3.5M) and fine (6.5M) meshes take about 3, 6 and 14

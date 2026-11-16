@@ -65,12 +65,15 @@ def stored_mesh_inputs(run_dir: Path) -> dict[str, object] | None:
 
 
 def keep_previous(folder: Path) -> None:
-    """Move a failed or unfinished attempt aside as <folder>.previous, replacing an older one."""
+    """Move a failed or unfinished attempt aside as <folder>.previous, replacing an older one. Its decomposed
+    case (processor*) is deleted: it is large and useless once the job has stopped."""
     if folder.exists():
         previous = folder.with_name(folder.name + ".previous")
         if previous.exists():
             shutil.rmtree(previous)
         folder.rename(previous)
+        for decomposed in previous.glob("processor*"):
+            shutil.rmtree(decomposed, ignore_errors=True)
 
 
 NODE_CORES = 192        # an Iridis 6 batch node (2 x AMD EPYC 9654); the jobs run on a single node

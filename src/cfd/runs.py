@@ -138,7 +138,14 @@ def failure_reason(log: str) -> str:
         return "cancelled"
     if "has not passed; nothing to solve on" in log:
         return "mesh not passed"
-    if step := re.search(r"^FAILED: (\S+)", log, re.MULTILINE):
+    step = re.search(r"^FAILED: (\S+)", log, re.MULTILINE)
+    where = f" ({step.group(1)})" if step else ""
+    if "disk quota exceeded" in lower or "no space left on device" in lower:
+        return "disk quota or space" + where
+    # OpenFOAM reports a failed write only as an IOstream error on an output stream, without the system's reason.
+    if re.search(r"error in IOstream .* Foam::Ostream", log):
+        return "write failed, likely disk quota" + where
+    if step:
         return f"{step.group(1)} failed"
     if "Traceback" in log:
         return "Python error"

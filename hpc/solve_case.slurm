@@ -25,6 +25,18 @@
 #SBATCH --error=slurm_%x_%j.out
 
 set -eo pipefail
+
+# Delete the decomposed case (processor*, ~1 GB per condition) however the job ends: finished, failed, or killed
+# at the time limit. Only the reconstructed results are kept, and leftovers from failed jobs filled the quota.
+# At the time limit Slurm sends TERM to every process; mpirun stops, then the TERM trap exits, running the EXIT trap.
+remove_decomposed() {
+    if [ -n "${solve_dir:-}" ]; then
+        rm -rf "${solve_dir}"/processor*
+    fi
+}
+trap remove_decomposed EXIT
+trap 'echo "Stopped by a signal (e.g. the time limit)"; exit 143' TERM
+
 source "${SLURM_SUBMIT_DIR}/hpc/env.sh"   # Slurm runs a copy of this script, so find env.sh via the repo
 load_openfoam
 load_python

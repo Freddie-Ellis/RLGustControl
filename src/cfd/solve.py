@@ -31,6 +31,8 @@ Function objects (written to postProcessing/):
     forces_<surface>         force and moment on each control surface, moments about a point on its hinge
                              (the hinge moment is the component along the hinge axis; see solve_report.py)
     forceCoeffs_aircraft     lift and drag coefficients, for monitoring
+    forceCoeffs_pitch        pitching moment coefficient about the model's y axis (as solve_report.py), for
+                             monitoring
     converged                stops the run once C_L, C_D and C_m have settled (see SolverSettings)
     solverInfo               residuals at every iteration
     yPlus, wallShearStress   written with the final fields
@@ -112,6 +114,14 @@ def freestream_direction(condition: FlowCondition) -> Vec3:
     """Unit vector the freestream flows along, in the model frame (see the module docstring)."""
     a, b = math.radians(condition.alpha_deg), math.radians(condition.beta_deg)
     return (math.cos(a) * math.cos(b), -math.sin(b), math.sin(a) * math.cos(b))
+
+
+def stability_x_direction(condition: FlowCondition) -> Vec3:
+    """The freestream direction projected onto the x-z plane, (cos(alpha), 0, sin(alpha)). Given to OpenFOAM as
+    the drag direction alongside lift_direction, it makes OpenFOAM's pitch axis (lift x drag direction) the model's
+    y axis at any sideslip, the axis solve_report.py's C_m is about."""
+    a = math.radians(condition.alpha_deg)
+    return (math.cos(a), 0.0, math.sin(a))
 
 
 def lift_direction(condition: FlowCondition) -> Vec3:
@@ -328,22 +338,54 @@ functions
         writeInterval   1;
     }}
 
-    // Stop, writing the fields, once Cl, Cd and CmPitch are each within tolerance of their running mean over
-    // the window (delta = |current - mean|). See SolverSettings.
+    // CmPitch about the model's y axis, the C_m solve_report.py judges convergence on. OpenFOAM's pitch axis is
+    // liftDir x dragDir, which for forceCoeffs_aircraft (dragDir along the freestream) tilts away from y in
+    // sideslip, taking in some of the rolling and yawing moments. Only this object's CmPitch is used.
+    forceCoeffs_pitch
+    {{
+        type            forceCoeffs;
+        libs            (forces);
+        patches         ({" ".join(walls)});
+        rho             rhoInf;
+        rhoInf          {s.density:g};
+        magUInf         {s.speed:g};
+        lRef            {ref.length * scale:.6g};
+        Aref            {ref.area * scale**2:.6g};
+        CofR            {foam_vector(ref_point)};
+        dragDir         {foam_vector(stability_x_direction(condition))};
+        liftDir         {foam_vector(lift_direction(condition))};
+        writeControl    timeStep;
+        writeInterval   1;
+    }}
+
+    // Stop, writing the fields, once Cl, Cd (freestream axes) and CmPitch (about y) are each within tolerance of
+    // their running mean over the window (delta = |current - mean|). Conditions in the same group must all be
+    // satisfied. See SolverSettings.
     converged
     {{
         type            runTimeControl;
         libs            (utilityFunctionObjects);
         conditions
         {{
-            coefficients
+            liftDrag
             {{
                 type            average;
                 functionObject  forceCoeffs_aircraft;
-                fields          (Cl Cd CmPitch);
+                fields          (Cl Cd);
                 tolerance       {s.convergence_tolerance:g};
                 window          {s.convergence_window};
                 windowType      approximate;
+                groupID         1;
+            }}
+            pitch
+            {{
+                type            average;
+                functionObject  forceCoeffs_pitch;
+                fields          (CmPitch);
+                tolerance       {s.convergence_tolerance:g};
+                window          {s.convergence_window};
+                windowType      approximate;
+                groupID         1;
             }}
         }}
     }}

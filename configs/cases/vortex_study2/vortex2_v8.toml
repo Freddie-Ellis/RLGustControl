@@ -1,0 +1,28 @@
+# Vortex study 2: refining the region above the skin beyond vortex_5 (configs/cases/vortex_study/, now the default
+# in configs/mesh/uav.toml), to check that the upper-surface pressure under the leading-edge vortex has converged.
+# Same condition as the first study (alpha 20, beta 0), on the clean wing and with both leading-edge flaps at +30 deg
+# (leading edge down; batch 2's largest LE-down setting). v5 is rerun as the baseline so that every mesh is made
+# with the same code and settings.
+# Levels: 6 = 6 mm, 7 = 3 mm, 8 = 1.5 mm (the skin's own level, so 8 extends the surface cell size outwards).
+#   v5  3 mm within 60 mm, 6 mm within 100 mm (the default)   ~4.6M cells
+#   v6  1.5 mm within 20 mm, then as v5                        ~7M cells
+#   v7  1.5 mm within 40 mm, then as v5                        ~9.5M cells
+#   v8  v5 one level finer: 1.5 mm within 60 mm, 3 mm to 100   ~13M cells (v1, v5, v8: a ratio-2 series)
+# Submit with   bash hpc/submit_cases.sh configs/cases/vortex_study2 --mesh-cores 64 --solve-cores 64 \
+#                   --mesh-time 06:00:00 --solve-time 10:00:00
+# Compare with  .venv/Scripts/python.exe -m postpro.pressure <vortex2_v5> <vortex2_v6> <vortex2_v7> <vortex2_v8>
+#               (and the same for the _le30 cases)
+
+description = "Vortex study 2 (clean wing, v8): v5 one level finer: 1.5 mm within 60 mm, 3 mm within 100 mm"
+geometry = "cad/uav/geometry.toml"
+mesh = "configs/mesh/uav.toml"
+solver = "configs/solver/uav_rans.toml"
+
+[deflections_deg]
+
+[mesh_overrides]
+surface_distance_levels = [[0.06, 8], [0.10, 7]]
+
+[flow]
+alpha_deg = [20.0]
+beta_deg = [0.0]

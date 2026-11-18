@@ -13,9 +13,9 @@ Run with ParaView's own Python (NOT normal python):
 undeflected cases first, then each set of control-surface deflections; within each, the alpha sweep at zero
 sideslip, then the sideslip conditions (see animation_order). Conditions with no walls.vtp yet are skipped. Stitch the frames into a video afterwards (see the bottom of this docstring).
 
-Stitching, either:
-  ffmpeg -framerate 4 -i frame_%04d.png -c:v libx264 -pix_fmt yuv420p -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" wall_cp.mp4
-  uv run python -c "from PIL import Image; import glob; f=[Image.open(p) for p in sorted(glob.glob('frame_*.png'))]; f[0].save('wall_cp.gif', save_all=True, append_images=f[1:], duration=250, loop=0)"
+Stitching at 0.1 s per frame (150 frames -> 15 s), either:
+  ffmpeg -framerate 10 -i frame_%04d.png -c:v libx264 -pix_fmt yuv420p -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" wall_cp.mp4
+  uv run python -c "from PIL import Image; import glob; f=[Image.open(p) for p in sorted(glob.glob('frame_*.png'))]; f[0].save('wall_cp.gif', save_all=True, append_images=f[1:], duration=100, loop=0)"
 """
 import glob
 import json

@@ -5,6 +5,7 @@ description = "Fourth year GDP project for online RL control of a delta type win
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
+    "manifold3d>=3.5.4",
     "matplotlib>=3.11.1",
     "maturin>=1.14.1",
     "neurolume",

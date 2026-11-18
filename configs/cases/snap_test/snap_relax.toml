@@ -1,0 +1,16 @@
+# Snapping test, coarse mesh (base 0.512 m, as mesh_study/mesh_coarse), no deflection, mesh only.
+# More snapping relaxation, to see whether it clears the dents left on the tapered wingtips and along the
+# fuselage-wing crease. Compare its walls.vtp with mesh_coarse's. Submit both tests with
+#     bash hpc/submit_cases.sh configs/cases/snap_test
+
+description = "Snap test: coarse mesh with more snapping relaxation"
+geometry = "cad/uav/geometry.toml"
+mesh = "configs/mesh/uav.toml"
+
+[deflections_deg]
+
+[mesh_overrides]
+base_cell_size = 0.512
+n_snap_smooth_patch = 5
+n_snap_relax_iter = 10
+n_feature_snap_iter = 15

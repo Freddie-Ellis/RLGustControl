@@ -1,0 +1,30 @@
+# Did the upper-splitter knuckle wedge actually break the mesh? batch1_038's deflections (right upper splitter at
+# 69.5 deg, right lower splitter closed), which the pre-mesh skin check used to refuse: the knuckle leaves a ~21 deg
+# wedge, 0.26 mm wide along the span, at x = 351.7, z = -18.4 mm. Meshed with the narrow-gap check switched off
+# (16 Nov 2026, job 4941415): it passed (non-orthogonality 69.7, skewness 3.64, no bad face tets, layers on the
+# splitters as in other meshes). So the narrow-gap check now only warns, and this case needs no override; it is
+# kept as the record of that test.
+
+description = "Upper splitter 69.5 deg, lower closed: the knuckle wedge test (batch1_038 deflections)"
+geometry = "cad/uav/geometry.toml"
+mesh = "configs/mesh/uav.toml"
+solver = "configs/solver/uav_rans.toml"
+
+[deflections_deg]
+wingtip_r = 48
+wingtip_l = 13.5
+le_flap_r = -49
+le_flap_l = -36
+obte_flap_r = 46
+obte_flap_l = -26
+ibte_flap_r = 46
+ibte_flap_l = -4
+upr_splitter_flap_r = 69.5
+upr_splitter_flap_l = 37
+lwr_splitter_flap_l = 26
+
+[solver_overrides]
+keep_fields = false
+
+[flow]
+pairs = [[6.5, -7]]

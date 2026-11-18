@@ -1,10 +1,8 @@
 {
   "python.analysis.extraPaths": [
     "${workspaceFolder}"
-  ]
-}
-{
+  ],
   "rust-analyzer.linkedProjects": [
-    "rust/Cargo.toml"
+    "ruststuff/Cargo.toml"
   ]
 }

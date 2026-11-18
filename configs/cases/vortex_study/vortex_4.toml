@@ -1,0 +1,20 @@
+# Vortex refinement study at alpha 20, beta 0: the medium mesh (base 0.384 m, 1.5 mm surface cells), plus
+# refinement by distance from the skin to resolve the leading-edge shear layer and vortex. Level 6 = 6 mm,
+# level 7 = 3 mm. Each cell takes the highest level any rule asks for, so the skin keeps its level 8 (1.5 mm);
+# without this the medium mesh already has 3 mm cells to ~13 mm off the skin and 6 mm to ~31 mm, then 12 mm.
+# Baseline: mesh_study/mesh_medium (C_L 0.820); the fine mesh gave 0.900.
+# Submit all five with   bash hpc/submit_cases.sh configs/cases/vortex_study --solve-time 08:00:00
+
+description = "Vortex study: medium mesh, 3 mm cells within 40 mm, 6 mm within 80 mm"
+geometry = "cad/uav/geometry.toml"
+mesh = "configs/mesh/uav.toml"
+solver = "configs/solver/uav_rans.toml"
+
+[deflections_deg]
+
+[mesh_overrides]
+surface_distance_levels = [[0.04, 7], [0.08, 6]]
+
+[flow]
+alpha_deg = [20.0]
+beta_deg = [0.0]

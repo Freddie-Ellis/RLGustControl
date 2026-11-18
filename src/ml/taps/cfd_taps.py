@@ -32,7 +32,7 @@ from src.ml.taps.tap_selection import (
 )
 
 TAP_PATCH: str = "main_body"  # the only patch that never moves
-TARGETS: tuple[str, ...] = ("C_m", "C_l", "C_n")  # pitch, roll and yaw moment coefficients
+TARGETS: tuple[str, ...] = ("C_m",)  # pitch moment coefficients
 DEFLECTIONS: str = r"^deflection_.*_deg$"  # runs.parquet columns of the known inputs
 UPPER: int = 0
 LOWER: int = 1

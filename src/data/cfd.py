@@ -134,9 +134,18 @@ def wall_faces(mesh_dir: Path) -> pl.DataFrame:
 
 
 def face_patches(centroid: np.ndarray, walls: pl.DataFrame) -> pl.Series:
-    """Patch of each sampled face (n,), from its centroid (n, 3) and the mesh's `wall_faces`."""
+    """Patch of each sampled face (n,), from its centroid (n, 3) and the mesh's `wall_faces`.
+
+    A mesh can hold coincident wall faces (same centroid, e.g. where two bodies touch). They are matched once, to the
+    first patch listed, so the result has one row per sampled face; coincident faces on different patches are
+    reported, since their patch is then ambiguous."""
+    centroid_cols = ["x", "y", "z"]
+    shared = walls.filter(pl.struct(centroid_cols).is_duplicated())
+    if clashes := shared.group_by(centroid_cols).agg(pl.col("patch").unique()).filter(pl.col("patch").list.len() > 1).height:
+        print(f"warning: {clashes} wall face centroid(s) are shared by different patches; using the first patch listed")
+    walls = walls.unique(subset=centroid_cols, keep="first", maintain_order=True)
     faces = pl.DataFrame({"x": centroid[:, 0], "y": centroid[:, 1], "z": centroid[:, 2]})
-    patch = faces.join(walls, on=["x", "y", "z"], how="left", maintain_order="left")["patch"]
+    patch = faces.join(walls, on=centroid_cols, how="left", maintain_order="left")["patch"]
     if missing := patch.null_count():
         raise ValueError(f"{missing} of {len(patch)} sampled faces match no wall face of the mesh")
     return patch

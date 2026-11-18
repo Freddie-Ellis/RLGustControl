@@ -15,7 +15,7 @@ __pycache__/
 !/ruststuff/target/wheels/
 
 # Ignore CFD data
-/src/data/cfd*
+/src/data/cfd/
 
 # Ignore Data
 /data/*

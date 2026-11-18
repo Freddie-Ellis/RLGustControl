@@ -17,7 +17,7 @@ the actuators do not explain (mainly the gust, and how it alters actuator effect
 
 The sensor noise also regularises the fit: with only a few hundred cases, a noise-free criterion
 would explain the training cases perfectly once the number of taps approaches the number of
-cases. Check a selection on held-out cases with `evaluate`.
+cases. Check a selection on held-out cases with `evaluate`, or with `heldout_curve` for every number of taps.
 
 Working in the space of cases keeps every step O(n_cases * n_candidates), so ~1e5 candidate
 points are fine.
@@ -180,18 +180,38 @@ def select_taps(
             available &= ~same_surface
 
     picked = torch.tensor(chosen, dtype=torch.long)
-    features = torch.cat([k, x[:, picked]], dim=1)
-    penalty = torch.cat([torch.full((k.shape[1],), KNOWN_JITTER), torch.full((len(chosen),), noise)])
+    return fit_estimator(cp, targets, picked, known, noise_std, unexplained=torch.stack(unexplained))
+
+
+def fit_estimator(
+    cp: Tensor,
+    targets: Tensor,
+    taps: Tensor,
+    known: Tensor | None = None,
+    noise_std: float = SENSOR_NOISE_CP,
+    unexplained: Tensor | None = None,
+) -> TapSelection:
+    """The linear estimator of the targets from the known inputs and Cp at `taps`, fitted on these cases.
+
+    `unexplained` is stored as given (empty if None): it describes how `taps` were chosen, not this fit.
+    """
+    dtype = torch.float64
+    scale = 1.0 / math.sqrt(cp.shape[0] - 1)
+    x = (cp[:, taps].to(dtype) - cp[:, taps].to(dtype).mean(dim=0)) * scale
+    t = (targets.to(dtype) - targets.to(dtype).mean(dim=0)) * scale
+    k = torch.empty(cp.shape[0], 0, dtype=dtype) if known is None else known.to(dtype)
+    k = (k - k.mean(dim=0)) * scale
+    features = torch.cat([k, x], dim=1)
+    penalty = torch.cat([torch.full((k.shape[1],), KNOWN_JITTER), torch.full((len(taps),), noise_std**2)])
     gram = features.T @ features + torch.diag(penalty.to(dtype))
-    estimator = torch.linalg.solve(gram, features.T @ t)
     return TapSelection(
-        taps=picked,
-        unexplained=torch.stack(unexplained),
-        pressure_mean=cp[:, picked].to(dtype).mean(dim=0),
+        taps=taps,
+        unexplained=torch.empty(0, targets.shape[1], dtype=dtype) if unexplained is None else unexplained,
+        pressure_mean=cp[:, taps].to(dtype).mean(dim=0),
         known_mean=torch.empty(0, dtype=dtype) if known is None else known.to(dtype).mean(dim=0),
         target_mean=targets.to(dtype).mean(dim=0),
         target_std=targets.to(dtype).std(dim=0),
-        estimator=estimator,
+        estimator=torch.linalg.solve(gram, features.T @ t),
     )
 
 
@@ -213,3 +233,27 @@ def evaluate(
     tap_cp = tap_cp + noise_std * torch.randn_like(tap_cp)
     error = selection.estimate(tap_cp, known) - targets.to(torch.float64)
     return error.pow(2).mean(dim=0).sqrt() / selection.target_std
+
+
+def heldout_curve(
+    selection: TapSelection,
+    train_cp: Tensor,
+    train_targets: Tensor,
+    test_cp: Tensor,
+    test_targets: Tensor,
+    train_known: Tensor | None = None,
+    test_known: Tensor | None = None,
+    noise_std: float = SENSOR_NOISE_CP,
+) -> Tensor:
+    """`evaluate`'s held-out error using only the first k taps chosen, for k = 0 .. n_taps. (n_taps + 1, K)
+
+    The estimator is refitted on the training cases for each k, so row k is what a k-tap layout would achieve on
+    unseen cases. Where it stops falling, further taps fit the training cases rather than add information.
+    """
+    return torch.stack([
+        evaluate(
+            fit_estimator(train_cp, train_targets, selection.taps[:k], train_known, noise_std),
+            test_cp, test_targets, test_known, noise_std,
+        )
+        for k in range(len(selection.taps) + 1)
+    ])

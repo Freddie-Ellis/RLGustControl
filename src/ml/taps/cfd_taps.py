@@ -26,7 +26,7 @@ from src.ml.taps.tap_selection import (
     N_TAPS,
     CandidatePoints,
     TapSelection,
-    evaluate,
+    heldout_curve,
     interpolation,
     select_taps,
 )
@@ -208,15 +208,20 @@ def _planform(ax: Axes, problem: TapProblem, taps: pl.DataFrame, surface: int, t
     ax.set_title(title)
 
 
-def plot_selection(problem: TapProblem, selection: TapSelection) -> None:
+def plot_selection(problem: TapProblem, selection: TapSelection, heldout: Tensor | None = None) -> None:
+    """Tap layout on both skins, and the unexplained target variance against number of taps: on the training runs
+    and, if `heldout` (from `heldout_curve`) is given, on the held-out runs."""
     taps = tap_table(problem, selection)
     fig, axes = plt.subplots(1, 3, figsize=(18, 7))
     _planform(axes[0], problem, taps, UPPER, "Upper skin (seen from above)")
     _planform(axes[1], problem, taps, LOWER, "Lower skin (seen from above)")
     for k, name in enumerate(problem.target_names):
-        axes[2].semilogy(selection.unexplained[:, k].numpy(), label=name)
+        line, = axes[2].semilogy(selection.unexplained[:, k].numpy(), label=f"{name} training")
+        if heldout is not None:
+            # (RMS error / training std)^2 is the held-out counterpart of the training variance fraction
+            axes[2].semilogy(heldout[:, k].pow(2).numpy(), "--", color=line.get_color(), label=f"{name} held out")
     axes[2].set_xlabel("Taps")
-    axes[2].set_ylabel("Unexplained fraction of target variance (training runs)")
+    axes[2].set_ylabel("Unexplained fraction of target variance")
     axes[2].legend()
     fig.tight_layout()
     PLOTS_DIR.mkdir(exist_ok=True)
@@ -235,12 +240,20 @@ def main() -> None:
     taps = tap_table(train, selection)
     with pl.Config(tbl_rows=-1):
         print(taps)
+    heldout = None
     if test.runs.height:
-        error = evaluate(selection, test.cp, test.targets, test.known)
-        print("held-out RMS error / training std:", dict(zip(problem.target_names, error.tolist(), strict=True)))
+        heldout = heldout_curve(
+            selection, train.cp, train.targets, test.cp, test.targets, train.known, test.known
+        )
+        for k, name in enumerate(problem.target_names):
+            best = int(heldout[:, k].argmin())
+            print(
+                f"{name} held-out RMS error / training std: {heldout[-1, k]:.3f} with all {len(selection.taps)} taps, "
+                f"lowest {heldout[best, k]:.3f} with the first {best}"
+            )
     OUTPUT_DIR.mkdir(exist_ok=True)
     taps.write_parquet(OUTPUT_DIR / "taps.parquet")
-    plot_selection(train, selection)
+    plot_selection(train, selection, heldout)
 
 
 if __name__ == "__main__":

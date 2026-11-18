@@ -12,7 +12,7 @@ dependencies = [
     "polars>=1.44.2",
     "pydantic>=2.13.5",
     "pyqtgraph>=0.14.0",
-    "pyside6>=6.11.2",
+    "pyside6>=6.11.2; sys_platform == 'win32'",  # UI only runs on Windows; no wheels for Iridis' glibc 2.28
     "qtpy>=2.4.3",
     "ruststuff",
     "snakeviz>=2.2.2",

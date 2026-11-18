@@ -1,7 +1,8 @@
-"""Render wall Cp (and optionally yPlus / Cf) for every case, same view + colour range.
+r"""Render wall Cp (and optionally yPlus / Cf) for every case, same view + colour range.
 
 Run with ParaView's own Python (NOT normal python):
-  "C:\\Program Files\\ParaView 5.xx\\bin\\pvpython.exe" render_walls.py C:\\path\\to\\cases C:\\path\\to\\outdir
+  Windows:  & "C:\Program Files\ParaView 6.2.1\bin\pvpython.exe" wall_cps.py C:\path\to\cases C:\path\to\outdir
+  Iridis:   <osmesa ParaView>/bin/pvbatch wall_cps.py /path/to/cases /path/to/outdir
 
 Expects: <root>/batch*/solve/<case>/postProcessing/wallSurfaces/<time>/walls.vtp
 walls.vtp holds CELL data: p (kinematic), yPlus, wallShearStress.
@@ -19,7 +20,8 @@ os.makedirs(outdir, exist_ok=True)
 # ---- settings ---------------------------------------------------------------
 U_INF = 20.0                 # m/s (speed_m_s in results.json)
 Q = 0.5 * U_INF ** 2         # kinematic dynamic pressure; assumes p is kinematic, p_inf = 0
-CP_RANGE = (-2.0, 1.0)       # fixed colour range so cases are comparable
+CP_RANGE = (-4.0, 1.0)       # fixed colour range so cases are comparable; covers all but the
+                             # deepest 0.1% of suction-peak cells (min ~ -5.4 at a=15-21 deg)
 SIZE = [1600, 900]
 # ------------------------------------------------------------------------------
 
@@ -33,7 +35,10 @@ view.Background = [1, 1, 1]
 view.OrientationAxesVisibility = 1
 
 lut = GetColorTransferFunction("Cp")
+lut.AutomaticRescaleRangeMode = "Never"   # stop ColorBy stretching the range to each case's data
 lut.RescaleTransferFunction(*CP_RANGE)
+pwf = GetOpacityTransferFunction("Cp")
+pwf.RescaleTransferFunction(*CP_RANGE)
 camera_set = False
 
 for f in files:
@@ -53,6 +58,7 @@ for f in files:
     disp = Show(calc, view)
     ColorBy(disp, ("CELLS", "Cp"))
     disp.LookupTable = lut
+    lut.RescaleTransferFunction(*CP_RANGE)   # re-pin in case anything rescaled it
     disp.SetScalarBarVisibility(view, True)
 
     if not camera_set:

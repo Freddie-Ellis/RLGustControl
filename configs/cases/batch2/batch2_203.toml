@@ -1,6 +1,6 @@
-# Written by src/cfd/batch_cases.py: rows 203, 204, 205, 206, 207, 208 of the case table (see index.csv).
+# Written by src/cfd/batch_cases.py: rows 203, 204, 205, 206, 207, 208, 317, 318, 319, 320, 321, 322 of the case table (see index.csv).
 
-description = "Batch case batch2_203: 6 flow condition(s)"
+description = "Batch case batch2_203: 12 flow condition(s)"
 geometry = "cad/uav/geometry.toml"
 mesh = "configs/mesh/uav.toml"
 solver = "configs/solver/uav_rans.toml"
@@ -9,4 +9,4 @@ solver = "configs/solver/uav_rans.toml"
 le_flap_r = 15
 
 [flow]
-pairs = [[9, -10], [9, 0], [9, 10], [21, -10], [21, 0], [21, 10]]
+pairs = [[9, -10], [9, 0], [9, 10], [21, -10], [21, 0], [21, 10], [0, -10], [0, 0], [0, 10], [27, -10], [27, 0], [27, 10]]

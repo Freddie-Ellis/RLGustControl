@@ -248,6 +248,7 @@ the affected `mesh/` folders to remesh.
 |---|---|
 | `--dry-run` | Print the `sbatch` commands without submitting |
 | `--mesh-only` | Submit only the mesh jobs |
+| `--new-only` | Submit only conditions never submitted before: failed ones are skipped as well as solved ones |
 | `--mesh-time`, `--solve-time HH:MM:SS` | Time limits (defaults 2 h and 6 h) |
 | `--mesh-cores`, `--solve-cores N` | MPI ranks per job, up to 192 (one node); default 32, memory scaled to match |
 | (default) | `sbatch --exclusive=user`: jobs share nodes only with your own jobs. Steady speed, but the first job on each node waits for one with no other users on it |

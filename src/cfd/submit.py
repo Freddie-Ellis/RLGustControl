@@ -5,6 +5,7 @@ Run on the Iridis login node through hpc/submit_cases.sh, which loads the Python
     bash hpc/submit_cases.sh configs/cases/mesh_study                  every case file in a folder
     bash hpc/submit_cases.sh configs/cases/mesh_study --mesh-only      mesh, don't solve
     bash hpc/submit_cases.sh configs/cases/batch1/batch1_000.toml --dry-run    show what would be submitted
+    bash hpc/submit_cases.sh configs/cases/batch2 --new-only        only conditions never submitted before
 
 Everything for a case goes in RUNS_DIR/<case name>/ (on scratch; see src/cfd/case.py), named after the case file.
 Each job is given its folder as an argument, so the Slurm scripts hold no paths of their own:
@@ -19,7 +20,9 @@ For each case:
            or unfinished attempt is kept as mesh.previous.
     solve  One job per flow condition, skipped if it already has results.json or a job queued or running. If
            the mesh job is still to run, the solve jobs wait for it, and are cancelled if it fails. A failed or
-           unfinished attempt is kept as <condition>.previous.
+           unfinished attempt is kept as <condition>.previous. With --new-only, a condition that has been
+           submitted before (its solve folder exists, whatever became of it) is skipped too, so only conditions
+           newly added to a case file are submitted.
 Jobs are named mesh_<case> and solve_<case>_<condition>, so squeue shows what each one is.
 """
 
@@ -88,8 +91,9 @@ def core_args(cores: int | None) -> list[str]:
 
 
 class Submitter:
-    def __init__(self, dry_run: bool, mesh_args: list[str], solve_args: list[str]) -> None:
+    def __init__(self, dry_run: bool, new_only: bool, mesh_args: list[str], solve_args: list[str]) -> None:
         self.dry_run = dry_run
+        self.new_only = new_only
         self.mesh_args = mesh_args
         self.solve_args = solve_args
         self.queued = queued_jobs()
@@ -147,6 +151,9 @@ class Submitter:
             if job_name in self.queued:
                 print(f"{name} {condition.name}: job {self.queued[job_name]} already queued or running")
                 continue
+            if self.new_only and (solve_dir.exists() or solve_dir.with_name(solve_dir.name + ".previous").exists()):
+                print(f"{name} {condition.name}: submitted before, skipped (--new-only)")
+                continue
             if not self.dry_run:
                 keep_previous(solve_dir)
             wait = [f"--dependency=afterok:{mesh_job}", "--kill-on-invalid-dep=yes"] if mesh_job else []
@@ -163,6 +170,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("target", type=Path, help="a case file, or a folder of case files")
     parser.add_argument("--mesh-only", action="store_true", help="submit mesh jobs only")
     parser.add_argument("--dry-run", action="store_true", help="print what would be submitted, submit nothing")
+    parser.add_argument("--new-only", action="store_true",
+                        help="submit only conditions never submitted before: skip failed ones as well as solved ones")
     parser.add_argument("--mesh-time", help="time limit for mesh jobs, e.g. 04:00:00")
     parser.add_argument("--solve-time", help="time limit for solve jobs, e.g. 08:00:00")
     parser.add_argument("--mesh-cores", type=int, help="cores (MPI ranks) per mesh job, at most one node (192)")
@@ -189,6 +198,7 @@ def main(argv: list[str] | None = None) -> None:
 
     submitter = Submitter(
         dry_run=args.dry_run,
+        new_only=args.new_only,
         mesh_args=([f"--time={args.mesh_time}"] if args.mesh_time else []) + core_args(args.mesh_cores) + exclusive,
         solve_args=([f"--time={args.solve_time}"] if args.solve_time else []) + core_args(args.solve_cores)
                    + exclusive,

@@ -1,6 +1,6 @@
-# Written by src/cfd/batch_cases.py: rows 173, 174, 175, 176, 177, 178 of the case table (see index.csv).
+# Written by src/cfd/batch_cases.py: rows 173, 174, 175, 176, 177, 178, 287, 288, 289, 290, 291, 292 of the case table (see index.csv).
 
-description = "Batch case batch2_173: 6 flow condition(s)"
+description = "Batch case batch2_173: 12 flow condition(s)"
 geometry = "cad/uav/geometry.toml"
 mesh = "configs/mesh/uav.toml"
 solver = "configs/solver/uav_rans.toml"
@@ -9,4 +9,4 @@ solver = "configs/solver/uav_rans.toml"
 ibte_flap_r = -25
 
 [flow]
-pairs = [[9, -10], [9, 0], [9, 10], [21, -10], [21, 0], [21, 10]]
+pairs = [[9, -10], [9, 0], [9, 10], [21, -10], [21, 0], [21, 10], [0, -10], [0, 0], [0, 10], [27, -10], [27, 0], [27, 10]]

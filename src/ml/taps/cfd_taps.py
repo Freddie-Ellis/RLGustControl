@@ -8,8 +8,8 @@ Turns runs.parquet and the per-run surface tables into the inputs of `select_tap
 - targets: the moment coefficients the controller has to hold;
 - known: the control-surface deflections, which the controller sets itself (only those that vary across runs).
 
-Run as a script to select taps on a training split, report how much of each target they explain on held-out runs,
-and save the layout and a plot.
+Run as a script to select taps on every run, estimate how well they explain each target on unseen runs by k-fold
+cross-validation, and save the layout and a plot.
 """
 
 from dataclasses import dataclass, replace
@@ -40,7 +40,7 @@ MIN_SKIN_NZ: float = 0.5  # |nz| below this is an edge or the side wall of a cut
 CANDIDATE_SPACING_M: float = 0.005  # finer than a tap can usefully be placed; sets the problem size
 MAX_INTERP_DISTANCE_M: float = 0.003  # a candidate further than this from a mesh's skin is not on it
 TAP_MIN_SPACING_M: float = 0.01  # placeholder: closest two taps can be fitted
-HOLDOUT_FRACTION: float = 0.2
+FOLDS: int = 5  # cross-validation folds: the error estimate uses every run, the final selection uses all of them
 SEED: int = 0
 
 OUTPUT_DIR: Path = Path(__file__).parent / "selections"
@@ -161,11 +161,34 @@ def tap_problem(data_dir: Path = CFD_DATA_DIR, targets: tuple[str, ...] = TARGET
     )
 
 
-def split(problem: TapProblem, holdout: float = HOLDOUT_FRACTION, seed: int = SEED) -> tuple[TapProblem, TapProblem]:
-    """(training, held-out) runs, chosen at random."""
+def folds(problem: TapProblem, n_folds: int = FOLDS, seed: int = SEED) -> list[tuple[TapProblem, TapProblem]]:
+    """(training, held-out) pairs for k-fold cross-validation: the runs are shuffled and dealt into `n_folds` groups,
+    and each group is held out once."""
     order = torch.randperm(problem.runs.height, generator=torch.Generator().manual_seed(seed))
-    n_test = round(holdout * problem.runs.height)
-    return problem.subset(order[n_test:].sort().values), problem.subset(order[:n_test].sort().values)
+    pairs = []
+    for i in range(n_folds):
+        held_out = torch.zeros(problem.runs.height, dtype=torch.bool)
+        held_out[order[i::n_folds]] = True
+        train_rows, test_rows = (~held_out).nonzero().squeeze(1), held_out.nonzero().squeeze(1)
+        pairs.append((problem.subset(train_rows), problem.subset(test_rows)))
+    return pairs
+
+
+def cross_validated_curve(problem: TapProblem, n_folds: int = FOLDS, n_taps: int = N_TAPS) -> Tensor:
+    """Held-out RMS error / training std against number of taps (n_taps + 1, K), over every run.
+
+    Each fold selects its own taps on the other runs and is scored on its held-out runs; the folds' squared errors
+    are pooled, weighted by their number of runs. This measures the selection procedure on unseen runs, so a
+    selection made on all runs should do slightly better."""
+    curves, sizes = [], []
+    for train, test in folds(problem, n_folds):
+        selection = choose_taps(train, n_taps)
+        curves.append(heldout_curve(selection, train.cp, train.targets, test.cp, test.targets, train.known, test.known))
+        sizes.append(test.runs.height)
+    length = min(len(c) for c in curves)  # a fold can stop early if its constraints run out of candidates
+    squared = torch.stack([c[:length].pow(2) for c in curves])  # (folds, taps + 1, K)
+    weights = torch.tensor(sizes, dtype=squared.dtype)[:, None, None] / sum(sizes)
+    return (squared * weights).sum(dim=0).sqrt()
 
 
 def choose_taps(problem: TapProblem, n_taps: int = N_TAPS) -> TapSelection:
@@ -209,8 +232,8 @@ def _planform(ax: Axes, problem: TapProblem, taps: pl.DataFrame, surface: int, t
 
 
 def plot_selection(problem: TapProblem, selection: TapSelection, heldout: Tensor | None = None) -> None:
-    """Tap layout on both skins, and the unexplained target variance against number of taps: on the training runs
-    and, if `heldout` (from `heldout_curve`) is given, on the held-out runs."""
+    """Tap layout on both skins, and the unexplained target variance against number of taps: on the runs the taps
+    were selected on and, if `heldout` (held-out RMS error / training std per tap count) is given, on unseen runs."""
     taps = tap_table(problem, selection)
     fig, axes = plt.subplots(1, 3, figsize=(18, 7))
     _planform(axes[0], problem, taps, UPPER, "Upper skin (seen from above)")
@@ -219,7 +242,7 @@ def plot_selection(problem: TapProblem, selection: TapSelection, heldout: Tensor
         line, = axes[2].semilogy(selection.unexplained[:, k].numpy(), label=f"{name} training")
         if heldout is not None:
             # (RMS error / training std)^2 is the held-out counterpart of the training variance fraction
-            axes[2].semilogy(heldout[:, k].pow(2).numpy(), "--", color=line.get_color(), label=f"{name} held out")
+            axes[2].semilogy(heldout[:, k].pow(2).numpy(), "--", color=line.get_color(), label=f"{name} cross-validated")
     axes[2].set_xlabel("Taps")
     axes[2].set_ylabel("Unexplained fraction of target variance")
     axes[2].legend()
@@ -231,29 +254,24 @@ def plot_selection(problem: TapProblem, selection: TapSelection, heldout: Tensor
 
 def main() -> None:
     problem = tap_problem()
-    train, test = split(problem)
     print(
-        f"{problem.runs.height} runs ({train.runs.height} training, {test.runs.height} held out), "
-        f"{problem.candidates.height} candidates, targets {problem.target_names}, known {problem.known_names}"
+        f"{problem.runs.height} runs, {problem.candidates.height} candidates, "
+        f"targets {problem.target_names}, known {problem.known_names}"
     )
-    selection = choose_taps(train)
-    taps = tap_table(train, selection)
+    selection = choose_taps(problem)  # the layout to build: every run, for full coverage
+    taps = tap_table(problem, selection)
     with pl.Config(tbl_rows=-1):
         print(taps)
-    heldout = None
-    if test.runs.height:
-        heldout = heldout_curve(
-            selection, train.cp, train.targets, test.cp, test.targets, train.known, test.known
+    heldout = cross_validated_curve(problem)
+    for k, name in enumerate(problem.target_names):
+        best = int(heldout[:, k].argmin())
+        print(
+            f"{name} {FOLDS}-fold cross-validated RMS error / training std: {heldout[-1, k]:.3f} with all "
+            f"{len(heldout) - 1} taps, lowest {heldout[best, k]:.3f} with the first {best}"
         )
-        for k, name in enumerate(problem.target_names):
-            best = int(heldout[:, k].argmin())
-            print(
-                f"{name} held-out RMS error / training std: {heldout[-1, k]:.3f} with all {len(selection.taps)} taps, "
-                f"lowest {heldout[best, k]:.3f} with the first {best}"
-            )
     OUTPUT_DIR.mkdir(exist_ok=True)
     taps.write_parquet(OUTPUT_DIR / "taps.parquet")
-    plot_selection(train, selection, heldout)
+    plot_selection(problem, selection, heldout)
 
 
 if __name__ == "__main__":

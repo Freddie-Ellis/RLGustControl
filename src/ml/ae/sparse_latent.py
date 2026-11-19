@@ -1,4 +1,5 @@
-"""The sparse-tap latent state the deployed SAC actor sees (see the delta wing sparse-tap latent workflow plan).
+"""The sparse-tap latent state the deployed SAC actor sees (see the delta wing sparse-tap latent workflow plan,
+https://claude.ai/artifact/3bQ7BkdCM9T1JuBPNergR3).
 
     TapAutoencoder   all the tunnel's taps -> latent z -> taps again, plus force and moment heads for training. Its
                      encoder E defines the latent; frozen during SAC, where z = E(taps) is privileged (critic only).

@@ -1,0 +1,18 @@
+name = "ae_cfd"
+seed = 0
+
+# Network (defaults in src/ml/ae/sparse_latent.py)
+latent_dim = 6          # size of the latent z; the plan's starting guess is 3 to 8
+hidden = 64             # width of the encoder and decoder layers
+
+# Optimisation
+epochs = 5000
+lr = 0.001
+weight_decay = 0.0001   # shrinkage against fitting individual runs (~100 CFD runs)
+load_weight = 1.0       # weight of the load heads' loss against the reconstruction loss
+input_noise_cp = 0.005  # sensor noise added to the input taps each epoch, in Cp
+
+# Data
+val_fraction = 0.2      # runs held out for validation; 0 trains on all and keeps the last epoch
+# data_dir = "src/data/cfd"                            # extracted CFD (default: src/data/cfd.py's CFD_DATA_DIR)
+# taps_file = "src/ml/taps/selections/taps.parquet"    # tap layout from src/ml/taps/cfd_taps.py

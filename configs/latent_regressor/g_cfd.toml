@@ -1,0 +1,27 @@
+# Latent regressor g trained on CFD (Stage 3 of the sparse-tap latent plan).
+#     python -m src.ml.ae.train_regressor configs/latent_regressor/g_cfd.toml
+# Every setting is a field of RegressorTrainConfig in src/ml/ae/train_regressor.py; any left out keeps its default.
+
+name = "g_cfd"
+seed = 0
+
+# Required: the autoencoder run whose frozen encoder gives g's targets. Its data, tap layout and train/validation
+# split are used as they are. Set it to a folder in runs/autoencoder/.
+autoencoder_run = "runs/autoencoder/REPLACE_WITH_RUN_FOLDER"
+
+# Network (defaults in src/ml/ae/sparse_latent.py)
+k_taps = 10             # deployed taps: the first k of the autoencoder's tap layout; the plan's guess is 8 to 12
+history_frames = 4      # frames in g's window (CFD is steady, so they only differ by noise until tunnel data)
+hidden = 128            # width of g's layers
+mask_aware = false      # true: g also takes a validity mask and is trained with taps randomly lost
+max_dropped = 2         # mask_aware only: the most taps a training sample loses
+
+# Optimisation
+epochs = 5000
+lr = 0.001
+weight_decay = 0.0001
+
+# Sensor augmentation on g's inputs (the plan's robustness step)
+noise_cp = 0.005        # noise on every frame, in Cp
+bias_cp = 0.01          # placeholder: std of each tap's offset, held over the window, in Cp
+gain_error = 0.02       # placeholder: std of each tap's fractional gain error, held over the window

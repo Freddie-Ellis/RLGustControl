@@ -42,6 +42,8 @@ MAX_INTERP_DISTANCE_M: float = 0.003  # a candidate further than this from a mes
 TAP_MIN_SPACING_M: float = 0.01  # placeholder: closest two taps can be fitted
 FOLDS: int = 5  # cross-validation folds: the error estimate uses every run, the final selection uses all of them
 SEED: int = 0
+USE_UNCONVERGED: bool = True  # also use runs whose loads never settled: their Cp is the last iteration's snapshot,
+# but their loads are averaged, so Cp and target need not match for them
 
 OUTPUT_DIR: Path = Path(__file__).parent / "selections"
 PLOTS_DIR: Path = Path(__file__).parent / "plots"
@@ -49,11 +51,16 @@ PLOTS_DIR: Path = Path(__file__).parent / "plots"
 
 # ---- Dataset -> selection problem -----------------------------------------------------------------------------------
 
-def load_runs(data_dir: Path = CFD_DATA_DIR) -> pl.DataFrame:
-    """Every converged run, sorted by name."""
+def load_runs(data_dir: Path = CFD_DATA_DIR, use_unconverged: bool = USE_UNCONVERGED) -> pl.DataFrame:
+    """Every run (or every converged run, if not `use_unconverged`), sorted by name."""
     runs = pl.read_parquet(data_dir / RUNS_FILE).sort("run")
-    if dropped := runs.filter(~pl.col("converged"))["run"].to_list():
-        print(f"dropping {len(dropped)} unconverged runs: {dropped}")
+    unconverged = runs.filter(~pl.col("converged"))["run"].to_list()
+    if use_unconverged:
+        if unconverged:
+            print(f"using {len(unconverged)} unconverged runs: {unconverged}")
+        return runs
+    if unconverged:
+        print(f"dropping {len(unconverged)} unconverged runs: {unconverged}")
     return runs.filter(pl.col("converged"))
 
 

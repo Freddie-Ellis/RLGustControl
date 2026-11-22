@@ -11,8 +11,8 @@ Run with ParaView's own Python (NOT normal python):
 <path> can be one case folder (.../solve/a+25.0_b+00.0), a solve folder, a batch folder, or the root holding the
 batch folders: every case found under it is rendered.
 
-Output: in each case's folder, sweep_x_000.png, sweep_x_001.png ... (x slices from upstream to downstream), then
-sweep_y_000.png ... (y slices from port to starboard).
+Output: in each case's folder, <field>_sweep_x_000.png, <field>_sweep_x_001.png ... (x slices from upstream to downstream), then
+<field>_sweep_y_000.png ... (y slices from port to starboard).
 
 Examples
   slices.py C:\dev\test_cfd\batch1_000\solve\a+25.0_b+00.0 out --axis x
@@ -23,7 +23,7 @@ Colour ranges: Cp uses CP_RANGE (the same as the wall scripts), |U| 0 to 1.5 U_i
 k, nut and p, which have no natural range, the range is taken over the slices of EVERY case found, so it is still
 one range for the whole set. --slice-range / --wall-range override any of these.
 
-Stitch a sweep into a video:  ffmpeg -framerate 4 -i sweep_x_%03d.png -pix_fmt yuv420p sweep_x.mp4
+Stitch a sweep into a video:  ffmpeg -framerate 4 -i U_sweep_x_%03d.png -pix_fmt yuv420p U_sweep_x.mp4
 
 Data (as written by src/cfd/solve.py):
   postProcessing/wallSurfaces/<time>/walls.vtp     cell data: p, yPlus, wallShearStress
@@ -254,7 +254,7 @@ def expected_images(case, tag, outdir):
     for ax, _, _ in slices:
         i = counters.get(ax, 0)
         counters[ax] = i + 1
-        paths.append(os.path.join(outdir, "sweep_%s_%03d.png" % (ax, i)))
+        paths.append(os.path.join(outdir, "%s_sweep_%s_%03d.png" % (sf, ax, i)))
     return paths
 
 
@@ -346,7 +346,7 @@ for case in cases:
         d.Visibility = 1
         label.Text = "%s   %s = %d mm" % (tag, ax, val)
         Render(view)
-        path = os.path.join(outdir, "sweep_%s_%03d.png" % (ax, i))
+        path = os.path.join(outdir, "%s_sweep_%s_%03d.png" % (sf, ax, i))
         SaveScreenshot(path, view, ImageResolution=args.size)
         print("saved", path)
 

@@ -244,6 +244,20 @@ else:
     slice_range = global_slice_range(cases, sf, args.axis)
 print("colour ranges: walls %s %s, slices %s %s" % (wall_array, wall_range, sf, slice_range))
 
+def expected_images(case, tag, outdir):
+    """Every PNG the render loop below writes for `case` (same names, same numbering)."""
+    slices = list_slices(case, args.axis)
+    if not slices:
+        return [os.path.join(outdir, "%s_wall%s.png" % (tag, wall_array))]
+    counters = {}
+    paths = []
+    for ax, _, _ in slices:
+        i = counters.get(ax, 0)
+        counters[ax] = i + 1
+        paths.append(os.path.join(outdir, "sweep_%s_%03d.png" % (ax, i)))
+    return paths
+
+
 wlut = fixed_lut(wall_array, wall_range)
 slut = fixed_lut(sf, slice_range)   # Cp on both: one map, one range (CP_RANGE)
 camera_set = False
@@ -254,6 +268,10 @@ for case in cases:
     tag = "%s_%s" % (batch, name) if batch.startswith("batch") else name
     outdir = os.path.join(args.outdir, tag)
     os.makedirs(outdir, exist_ok=True)
+    if camera_set and all(os.path.exists(p) for p in expected_images(case, tag, outdir)):
+        # Resume after an interrupted run. The first case is always rendered, as it frames the camera.
+        print("%s: already rendered, skipping" % tag)
+        continue
     q = dynamic_pressure(case)
     created = []          # for cleanup, creation order
 

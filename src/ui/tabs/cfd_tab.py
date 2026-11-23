@@ -5,6 +5,10 @@ flow. The model stays still (model frame) and so does the camera: changing slice
 so the same spot can be compared across cases. Each slider keeps its position when the case or field changes.
 Left-drag rotates, right-drag or the wheel zooms, middle-drag (or shift + left) pans; "Reset view" goes back to the
 view the rendered images used.
+
+Cases in subfolders of the folder are separate sets (pick with "Set"; the cases directly in the folder are "main").
+A set of one-actuator-at-a-time cases, e.g. actuator_effects, is browsed as sweeps instead of case by case: pick an
+actuator and a flow condition, then drag the deflection slider to watch that surface move through its sweep.
 """
 
 from collections import OrderedDict
@@ -48,6 +52,17 @@ def bar_args(field: str, title: str, position_y: float) -> ScalarBarArgs:
             "title_font_size": 14, "label_font_size": 12}
 
 
+def refill(combo: QComboBox, items: list[str]) -> None:
+    """Replace `combo`'s items without signalling, keeping the current text if it is still an item."""
+    current = combo.currentText()
+    combo.blockSignals(True)
+    combo.clear()
+    combo.addItems(items)
+    if current in items:
+        combo.setCurrentText(current)
+    combo.blockSignals(False)
+
+
 class CfdTab(QWidget):
     def __init__(self) -> None:
         super().__init__()
@@ -56,13 +71,20 @@ class CfdTab(QWidget):
         self._slice_actors: dict[str, list[pv.Actor]] = {}  # axis -> one actor per slice, only the current shown
         self._camera_set = False
 
-        # --- source row: folder, case, field ---
+        self._sweeps: slice_data.Sweeps = {}  # the current set's actuator sweeps; empty = pick cases one by one
+        self._sweep: list[slice_data.SweepPoint] = []  # the chosen actuator and condition's cases, by deflection
+
+        # --- source row: folder, set, case, field ---
         self.folder_edit = QLineEdit(str(slice_data.CFD_VIEW_DIR))
         self.folder_edit.editingFinished.connect(self.refresh)
         browse = QPushButton("Browse...")
         browse.clicked.connect(self._browse)
         refresh = QPushButton("Refresh")
         refresh.clicked.connect(self.refresh)
+        self.set_combo = QComboBox()
+        self.set_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self.set_combo.currentIndexChanged.connect(lambda _: self._load_set())
+        self.case_label = QLabel("Case")
         self.case_combo = QComboBox()
         self.case_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
         self.case_combo.currentTextChanged.connect(lambda _: self._load_case())
@@ -78,11 +100,37 @@ class CfdTab(QWidget):
         source.addWidget(browse)
         source.addWidget(refresh)
         source.addSpacing(16)
-        source.addWidget(QLabel("Case"))
+        source.addWidget(QLabel("Set"))
+        source.addWidget(self.set_combo)
+        source.addWidget(self.case_label)
         source.addWidget(self.case_combo)
         source.addWidget(QLabel("Field"))
         source.addWidget(self.field_combo)
         source.addWidget(reset)
+
+        # --- actuator sweep row (sets of one-actuator cases): actuator, flow condition, deflection slider ---
+        self.actuator_combo = QComboBox()
+        self.actuator_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self.actuator_combo.currentTextChanged.connect(lambda _: self._load_actuator())
+        self.condition_combo = QComboBox()
+        self.condition_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self.condition_combo.currentIndexChanged.connect(lambda _: self._load_condition())
+        self.deflection_slider = QSlider(Qt.Orientation.Horizontal)
+        self.deflection_slider.setPageStep(1)
+        self.deflection_slider.valueChanged.connect(lambda _: self._swept())
+        self.deflection_label = QLabel()
+        self.deflection_label.setMinimumWidth(130)
+        self.sweep_row = QWidget()
+        sweep = QHBoxLayout(self.sweep_row)
+        sweep.setContentsMargins(0, 0, 0, 0)
+        sweep.addWidget(QLabel("Actuator"))
+        sweep.addWidget(self.actuator_combo)
+        sweep.addWidget(QLabel("Condition"))
+        sweep.addWidget(self.condition_combo)
+        sweep.addWidget(QLabel("Deflection"))
+        sweep.addWidget(self.deflection_slider, 1)
+        sweep.addWidget(self.deflection_label)
+        self.sweep_row.hide()
 
         # --- one slider per axis; the radio button says which one is shown ---
         self.axis_group = QButtonGroup(self)
@@ -113,6 +161,7 @@ class CfdTab(QWidget):
 
         layout = QVBoxLayout(self)
         layout.addLayout(source)
+        layout.addWidget(self.sweep_row)
         layout.addLayout(sliders)
         layout.addWidget(self.plotter.interactor, 1)
         layout.addWidget(self.status)
@@ -122,17 +171,18 @@ class CfdTab(QWidget):
 
     # ----- public -----
     def refresh(self) -> None:
-        """Re-read the folder's cases, keeping the selected case if it is still there."""
+        """Re-read the folder's sets and cases, keeping the selected set and case if they are still there."""
         self._cases.clear()
-        current = self.case_combo.currentText()
-        cases = slice_data.list_cases(Path(self.folder_edit.text()))
-        self.case_combo.blockSignals(True)
-        self.case_combo.clear()
-        self.case_combo.addItems(cases)
-        if current in cases:
-            self.case_combo.setCurrentText(current)
-        self.case_combo.blockSignals(False)
-        self._load_case()
+        current = self.set_combo.currentData()
+        sets = slice_data.list_sets(Path(self.folder_edit.text()))
+        self.set_combo.blockSignals(True)
+        self.set_combo.clear()
+        for name in sets:
+            self.set_combo.addItem(name or "main", name)  # the cases directly in the folder are "main"
+        if current in sets:
+            self.set_combo.setCurrentIndex(sets.index(current))
+        self.set_combo.blockSignals(False)
+        self._load_set()
 
     # ----- internals -----
     def _browse(self) -> None:
@@ -141,16 +191,92 @@ class CfdTab(QWidget):
             self.folder_edit.setText(folder)
             self.refresh()
 
+    def _set_dir(self) -> Path:
+        return Path(self.folder_edit.text()) / (self.set_combo.currentData() or "")
+
+    def _load_set(self) -> None:
+        """List the set's cases, and show the actuator sweep row instead of the case list if the set has sweeps."""
+        set_dir = self._set_dir()
+        current = self.case_combo.currentText()
+        cases = slice_data.list_cases(set_dir) if self.set_combo.count() else []
+        self.case_combo.blockSignals(True)
+        self.case_combo.clear()
+        self.case_combo.addItems(cases)
+        if current in cases:
+            self.case_combo.setCurrentText(current)
+        self.case_combo.blockSignals(False)
+
+        self._sweeps = slice_data.actuator_sweeps(set_dir) if cases else {}
+        sweeping = bool(self._sweeps)
+        self.sweep_row.setVisible(sweeping)
+        self.case_label.setVisible(not sweeping)
+        self.case_combo.setVisible(not sweeping)
+        if sweeping:
+            refill(self.actuator_combo, list(self._sweeps))
+            self._load_actuator()
+        else:
+            self._load_case()
+
+    def _load_actuator(self) -> None:
+        """The chosen actuator's flow conditions; keeps the condition if this actuator was swept at it too."""
+        conditions = list(self._sweeps.get(self.actuator_combo.currentText(), {}))
+        current = self.condition_combo.currentData()
+        self.condition_combo.blockSignals(True)
+        self.condition_combo.clear()
+        for alpha, beta in conditions:
+            self.condition_combo.addItem(f"AoA {alpha:+.1f}, sideslip {beta:+.1f}", (alpha, beta))
+        if current in conditions:
+            self.condition_combo.setCurrentIndex(conditions.index(current))
+        self.condition_combo.blockSignals(False)
+        self._load_condition()
+
+    def _load_condition(self) -> None:
+        """The deflections swept at the chosen condition; keeps the deflection if it was swept here too."""
+        condition = self.condition_combo.currentData()
+        previous = self._sweep[self.deflection_slider.value()].deflection_deg if self._sweep else 0.0
+        self._sweep = self._sweeps.get(self.actuator_combo.currentText(), {}).get(condition, [])
+        deflections = [p.deflection_deg for p in self._sweep]
+        self.deflection_slider.blockSignals(True)
+        self.deflection_slider.setRange(0, max(len(self._sweep) - 1, 0))
+        if deflections:  # the swept deflection nearest the one shown before
+            self.deflection_slider.setValue(min(range(len(deflections)), key=lambda i: abs(deflections[i] - previous)))
+        self.deflection_slider.blockSignals(False)
+        self.deflection_slider.setEnabled(len(self._sweep) > 1)
+        self._swept()
+
+    def _swept(self) -> None:
+        """Show the case at the slider's deflection."""
+        if not self._sweep:
+            self.deflection_label.setText("-")
+            return
+        i = self.deflection_slider.value()
+        self.deflection_label.setText(f"{self._sweep[i].deflection_deg:+.1f} deg   ({i + 1} / {len(self._sweep)})")
+        self.case_combo.blockSignals(True)
+        self.case_combo.setCurrentText(self._sweep[i].case)
+        self.case_combo.blockSignals(False)
+        self._load_case()
+
+    def _title(self) -> str:
+        """What the view's label calls the current case: the actuator and deflection when sweeping."""
+        if self._case is None:
+            return ""
+        if not self._sweeps or not self._sweep:
+            return self._case.name
+        point = self._sweep[self.deflection_slider.value()]
+        return f"{self.actuator_combo.currentText()} {point.deflection_deg:+.1f} deg   {self.condition_combo.currentText()}"
+
     def _load_case(self) -> None:
         name = self.case_combo.currentText()
+        path = self._set_dir() / name
+        key = str(path)
         if not name:
             self._case = None
-        elif name in self._cases:
-            self._cases.move_to_end(name)
-            self._case = self._cases[name]
+        elif key in self._cases:
+            self._cases.move_to_end(key)
+            self._case = self._cases[key]
         else:
-            self._case = slice_data.load_case(Path(self.folder_edit.text()) / name)
-            self._cases[name] = self._case
+            self._case = slice_data.load_case(path)
+            self._cases[key] = self._case
             if len(self._cases) > CACHED_CASES:
                 self._cases.popitem(last=False)
         for axis in slice_data.AXES:
@@ -242,6 +368,7 @@ class CfdTab(QWidget):
         if case is not None:
             slices = case.slices[shown]
             where = f"   {shown} = {slices[self.sliders[shown].value()].position_mm} mm" if slices else ""
-            self.plotter.add_text(case.name + where, position="upper_left", font_size=11, color="black", name="label")
-            self.status.setText(str(Path(self.folder_edit.text()) / case.name))
+            self.plotter.add_text(self._title() + where, position="upper_left", font_size=11, color="black",
+                                  name="label")
+            self.status.setText(str(self._set_dir() / case.name))
         self.plotter.render()

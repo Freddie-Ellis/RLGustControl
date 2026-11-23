@@ -7,6 +7,10 @@ thin_cases.py writes, per solved condition:
     <dir>/<batch>_<condition>/x_136mm.vtp, y_m118mm.vtp  cell data p, U
     <dir>/<batch>_<condition>/case.json                  freestream_velocity_m_s
 
+Cases can also sit one folder down, one folder per set (e.g. <dir>/actuator_effects/...). A set whose cases move one
+actuator at a time can be viewed as actuator sweeps (`actuator_sweeps`); the deflections come from the case files in
+configs/cases, matched by name.
+
 Everything is in the model frame (x aft, y starboard, z up): the wing stays still and the freestream turns.
 
 The fields, ranges and colour maps match paraview_scripts/slices.py (keep them in step), so the viewer shows what the
@@ -16,7 +20,9 @@ fields are blue - white - red with white at exactly 0; |U| uses ParaView's defau
 
 import json
 import re
+import tomllib
 from dataclasses import dataclass
+from functools import cache
 from pathlib import Path
 
 import numpy as np
@@ -24,7 +30,10 @@ import pyvista as pv
 from numpy.typing import NDArray
 from vtkmodules.vtkRenderingCore import vtkColorTransferFunction
 
+from src.config import CONFIG
+
 CFD_VIEW_DIR: Path = Path(__file__).resolve().parent.parent / "data" / "cfd_view"  # thin_cases.py's <outdir>, copied
+CASE_FILES_DIR: Path = CONFIG.configs_dir / "cases"  # the case files the cases were solved from (batch_cases.py)
 AXES: tuple[str, ...] = ("x", "y")
 U_INF: float = 20.0  # m/s: sets the velocity colour ranges, and the freestream of a case with no case.json
 CP_RANGE: tuple[float, float] = (-4.0, 1.0)  # as slices.py and wall_cp_animation.py
@@ -76,6 +85,81 @@ def list_cases(data_dir: Path = CFD_VIEW_DIR) -> list[str]:
     if not data_dir.is_dir():
         return []
     return sorted((d.name for d in data_dir.iterdir() if (d / "case.json").is_file()), key=case_order)
+
+
+def list_sets(data_dir: Path = CFD_VIEW_DIR) -> list[str]:
+    """Sets of cases: "" for the cases directly in `data_dir`, then each subfolder holding cases (e.g.
+    actuator_effects), by name."""
+    if not data_dir.is_dir():
+        return []
+    subsets = sorted(d.name for d in data_dir.iterdir() if d.is_dir() and list_cases(d))
+    return ([""] if list_cases(data_dir) else []) + subsets
+
+
+@dataclass(frozen=True)
+class SweepPoint:
+    deflection_deg: float
+    case: str
+
+
+type Sweeps = dict[str, dict[tuple[float, float], list[SweepPoint]]]  # actuator -> (alpha, beta) -> by deflection
+
+
+@cache
+def _case_files() -> dict[str, Path]:
+    """Every case file under CASE_FILES_DIR, by name (e.g. batch2_137)."""
+    return {path.stem: path for path in CASE_FILES_DIR.rglob("*.toml")}
+
+
+def case_deflections(name: str) -> dict[str, float] | None:
+    """The case's deflections (surface -> deg, any not listed are 0), from the case file it was solved from:
+    configs/cases/.../<case file>.toml, the case file being the start of the case's name (batch2_137 in
+    batch2_137_a+09.0_b+00.0). None if that case file is not in the repo."""
+    m = _CASE.match(name)
+    path = _case_files().get(m["batch"]) if m else None
+    if path is None:
+        return None
+    return {surface: float(deg) for surface, deg in tomllib.loads(path.read_text()).get("deflections_deg", {}).items()}
+
+
+def actuator_name(surfaces: list[str]) -> str:
+    """A readable name for surfaces moved together: a left/right pair (x_l, x_r) is "x (both)"."""
+    parts = []
+    for surface in sorted(surfaces):
+        base, side = surface.rsplit("_", 1) if surface.endswith(("_l", "_r")) else (surface, "")
+        if side == "r" and f"{base}_l" in surfaces:
+            continue  # named with its _l partner
+        parts.append(f"{base} (both)" if side == "l" and f"{base}_r" in surfaces else surface)
+    return " + ".join(parts)
+
+
+def actuator_sweeps(set_dir: Path) -> Sweeps:
+    """The set's actuator sweeps. An actuator is a group of surfaces moved together by one angle with everything else
+    at 0 (one surface, a left/right pair, a group of splitters); its sweep at each flow condition is its cases there,
+    by deflection. A case with nothing deflected joins every actuator's sweep at its condition as the 0 deg point.
+    Cases moving surfaces by different angles fit no sweep and are left out. Empty if no case is a sweep point."""
+    moved_alone: dict[str, dict[tuple[float, float], list[SweepPoint]]] = {}
+    clean: dict[tuple[float, float], str] = {}
+    for name in list_cases(set_dir):
+        m = _CASE.match(name)
+        deflections = case_deflections(name) if m else None
+        if m is None or deflections is None:
+            continue
+        condition = (float(m["alpha"]), float(m["beta"]))
+        moved = {surface: deg for surface, deg in deflections.items() if deg != 0.0}
+        if not moved:
+            clean[condition] = name
+        elif len(set(moved.values())) == 1:
+            actuator = actuator_name(list(moved))
+            deg = next(iter(moved.values()))
+            moved_alone.setdefault(actuator, {}).setdefault(condition, []).append(SweepPoint(deg, name))
+    sweeps: Sweeps = {}
+    for actuator in sorted(moved_alone):
+        sweeps[actuator] = {}
+        for condition in sorted(moved_alone[actuator], key=lambda c: (c[1] != 0.0, c[0], c[1])):
+            zero = [SweepPoint(0.0, clean[condition])] if condition in clean else []
+            sweeps[actuator][condition] = sorted(moved_alone[actuator][condition] + zero, key=lambda p: p.deflection_deg)
+    return sweeps
 
 
 def case_order(name: str) -> tuple[bool, str, bool, float, float]:

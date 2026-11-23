@@ -27,7 +27,7 @@ import sys
 from paraview.simple import *
 
 # ---- settings ---------------------------------------------------------------
-CP_RANGE = (-4.0, 1.0)       # keep in step with wall_cps.py so stills and animation share a colour scale
+CP_RANGE = (-4.0, 1.0)       # keep in step with slices.py and src/cfd/slice_data.py: one Cp colour scale everywhere
 SIZE = [1600, 900]
 VIEW_DIRECTION = (-1.4, -1.5, 1.0)   # camera sits along this direction from the moment reference point
 ZOOM = 0.8                   # < 1 backs the camera off so every pitched / yawed pose stays in shot

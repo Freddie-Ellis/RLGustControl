@@ -1,7 +1,7 @@
 r"""Flow slices + wall surface (Cp, yPlus or Cf) for CFD cases: one image per slice, stepping through the slices.
 
 Every image shares one camera and one colour range per field, so cases can be compared image to image (as in
-wall_cps.py and wall_cp_animation.py). Slices are drawn one at a time because, shown together, the nearest one hides
+wall_cp_animation.py). Slices are drawn one at a time because, shown together, the nearest one hides
 all the others.
 
 Run with ParaView's own Python (NOT normal python):
@@ -49,7 +49,7 @@ from paraview.simple import *
 
 # ---- settings ---------------------------------------------------------------
 U_INF = 20.0                 # m/s, used only when a case has no solve_case.json
-CP_RANGE = (-4.0, 1.0)       # keep in step with wall_cps.py and wall_cp_animation.py
+CP_RANGE = (-4.0, 1.0)       # keep in step with wall_cp_animation.py and src/cfd/slice_data.py
 DEFAULT_WALL_RANGE = {"Cp": CP_RANGE, "yPlus": (0.0, 100.0), "Cf": (0.0, 0.01)}
 DEFAULT_SLICE_RANGE = {
     "U": (0.0, 1.5 * U_INF), "Cp": CP_RANGE,

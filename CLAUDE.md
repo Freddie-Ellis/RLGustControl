@@ -6,13 +6,14 @@ University Part IV GDP: online estimation and reinforcement-learning-based contr
 ## Modelling approach
 Combine Physics Augmented Auto Encoders (PA-AE), LSTM networks and RL to control the wing in extreme aerodynamic conditions.
 
-RL is SAC only, with one policy (`SquashedGaussianPolicy` in `src/ml/policy.py`). Only the environment is selectable in a run config. Don't add an algorithm or policy choice back. (`src/ml/tutorial/` is standalone learning material with its own PPO.)
+RL is SAC only, with one policy (`SquashedGaussianPolicy` in `src/ml/policy.py`). Only the environment is selectable in a run config. Don't add an algorithm or policy choice back.
 
 ## Code structure
 - Python is the main language (`main.py`, Python >= 3.14, managed with uv; `pyproject.toml` / `uv.lock`).
 - `ruststuff/` is a Rust backend compiled into a Python module with maturin. It holds performance-critical code while keeping access to Python libraries. Type stubs live in `ruststuff.pyi`; keep them in sync with the Rust API.
-- `benchmarks/` holds benchmarks.
 - `ruststuff` is installed from the wheel in `ruststuff/target/wheels/`, so rebuild the wheel after changing Rust code.
+- `src/cfd/` is the CFD pipeline (geometry, meshing, solving on Iridis), with `postpro/` for downloaded runs and `paraview_scripts/` (run with pvpython/pvbatch, not the venv). `hpc/` holds the Iridis job scripts. `src/data/cfd.py` extracts CFD results to Parquet. See `docs/cfd.md`.
+- Wing and rig numbers live in `CONFIG.rig` (`src/config.py`).
 
 ## Libraries
 Use these, and don't substitute alternatives:
@@ -28,5 +29,5 @@ Use these, and don't substitute alternatives:
 - Use Polars, never Pandas.
 - Put performance-critical code in the Rust backend rather than slow Python loops.
 - Ask before adding new dependencies.
-- Keep UI and functionality separate. Functional code (`src/ml/`, `src/hw/`, `src/data/`) never imports Qt. UI code (`src/ui/`) only displays results and launches functional code; it holds no logic of its own.
+- Keep UI and functionality separate. Functional code (`src/ml/`, `src/hw/`, `src/data/`, `src/cfd/`) never imports Qt. UI code (`src/ui/`) only displays results and launches functional code; it holds no logic of its own.
 - Settings and constants live with the functional code they belong to (module constants, configs, function defaults). The UI only sets a value when it has a widget for exactly that setting (e.g. the shared-folder box). Otherwise it passes the functional module's own value through, so there is one obvious place each constant comes from.

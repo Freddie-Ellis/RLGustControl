@@ -1,6 +1,6 @@
 """Surface pressure along chordwise cuts of the wing, compared between runs (e.g. the mesh study's meshes).
 
-    .venv/Scripts/python.exe -m postpro.pressure <run folder> ... [--conditions a+10.0_b+00.0 ...]
+    .venv/Scripts/python.exe -m src.cfd.postpro.pressure <run folder> ... [--conditions a+10.0_b+00.0 ...]
         [--stations 60 120 180 240 300] [--out FOLDER] [--show]
 
 Cp = p / (1/2 V^2): simpleFoam's p is kinematic (pressure / density) and the freestream pressure is 0. The
@@ -23,7 +23,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import polars as pl
 
-from postpro.common import (DEFAULT_STATIONS_MM, chordwise, common_conditions, find_runs, output_dir, print_table,
+from src.cfd.postpro.common import (DEFAULT_STATIONS_MM, chordwise, common_conditions, find_runs, output_dir, print_table,
                             read_vtp, run_parser, solve_case, wall_surface_path)
 
 COMPARE_X_C: np.ndarray = np.linspace(0.02, 0.98, 97)  # leaves out the leading and trailing edges themselves

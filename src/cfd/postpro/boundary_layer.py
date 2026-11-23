@@ -1,6 +1,6 @@
 """Boundary-layer checks: y+ on the walls, prism-layer coverage, and skin friction against flat-plate values.
 
-    .venv/Scripts/python.exe -m postpro.boundary_layer <run folder> ... [--conditions a+00.0_b+00.0 ...]
+    .venv/Scripts/python.exe -m src.cfd.postpro.boundary_layer <run folder> ... [--conditions a+00.0_b+00.0 ...]
         [--stations 60 120 180 240 300] [--out FOLDER] [--show]
 
 y+ is the height of the first cell centre off the wall in wall units. The walls use Spalding's wall function,
@@ -29,7 +29,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import polars as pl
 
-from postpro.common import (DEFAULT_STATIONS_MM, WallSurface, chordwise, common_conditions, find_runs, output_dir,
+from src.cfd.postpro.common import (DEFAULT_STATIONS_MM, WallSurface, chordwise, common_conditions, find_runs, output_dir,
                             print_table, read_vtp, run_parser, solve_case, wall_surface_path)
 
 YPLUS_BANDS: tuple[float, ...] = (0.0, 1.0, 5.0, 30.0, 100.0, 300.0, math.inf)

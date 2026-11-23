@@ -7,7 +7,7 @@ the Iridis 6 HPC: case files go in, and coefficients, hinge moments and surface 
 ```
 SolidWorks ─► one STL per body ─► deflect control surfaces ─► merge into one outer skin, check it
     ─► snappyHexMesh (once per set of deflections) ─► simpleFoam, k-ω SST (once per α, β) ─► results.json
-    ─► postpro/ tables and plots ─► (planned) Parquet dataset ─► surrogate
+    ─► src/cfd/postpro/ tables and plots ─► (planned) Parquet dataset ─► surrogate
 ```
 
 **Status:** geometry, meshing, solving and post-processing work on Iridis. The mesh-independence study has been run on
@@ -34,13 +34,13 @@ waits on the mesh choice. Collecting results into a dataset is planned.
 | `src/cfd/runs.py` | Lists every run and its state, read from the run folders |
 | `src/cfd/batch_cases.py` | Turns a table of cases (deflections, α, β) into case files, one per set of deflections |
 
-| Post-processing (`postpro/`, run locally on downloaded run folders) | Purpose |
+| Post-processing (`src/cfd/postpro/`, run locally on downloaded run folders) | Purpose |
 |---|---|
-| `postpro/summary.py` | Tables of every set point's coefficients, hinge moments, α and β derivatives, slopes and control effects (change from the clean case); coefficient and hinge-moment plots against α |
-| `postpro/convergence.py` | Convergence table (iterations, gap from the running mean, final ranges and residuals); coefficient and residual histories |
-| `postpro/pressure.py` | Cp along chordwise cuts at spanwise stations, overlaid across runs, with the RMS difference from the last run |
-| `postpro/boundary_layer.py` | y⁺ per patch and by area, prism-layer coverage, and skin friction along cuts against flat-plate correlations |
-| `postpro/common.py` | Shared loading: run folders, `results.json`, the wall-surface VTK files, surface cuts |
+| `src/cfd/postpro/summary.py` | Tables of every set point's coefficients, hinge moments, α and β derivatives, slopes and control effects (change from the clean case); coefficient and hinge-moment plots against α |
+| `src/cfd/postpro/convergence.py` | Convergence table (iterations, gap from the running mean, final ranges and residuals); coefficient and residual histories |
+| `src/cfd/postpro/pressure.py` | Cp along chordwise cuts at spanwise stations, overlaid across runs, with the RMS difference from the last run |
+| `src/cfd/postpro/boundary_layer.py` | y⁺ per patch and by area, prism-layer coverage, and skin friction along cuts against flat-plate correlations |
+| `src/cfd/postpro/common.py` | Shared loading: run folders, `results.json`, the wall-surface VTK files, surface cuts |
 
 | HPC file | Purpose |
 |---|---|
@@ -66,7 +66,7 @@ waits on the mesh choice. Collecting results into a dataset is planned.
    rewrites `runs.csv` (one row per case) and `conditions.csv` (one row per flow condition: status
    converged / not converged / running / queued / FAILED / not started / not submitted, the failure reason, job id,
    iterations and coefficients) in the runs folder.
-7. **Post-process** (locally): download the run folders and run the `postpro/` scripts (see
+7. **Post-process** (locally): download the run folders and run the `src/cfd/postpro/` scripts (see
    [Post-processing](#6-post-processing)).
 
 ## 1. Geometry
@@ -293,10 +293,10 @@ Download the run folders: each `solve/<condition>/` needs `results.json`, `solve
 repository root:
 
 ```
-.venv/Scripts/python.exe -m postpro.summary <run folders...>
-.venv/Scripts/python.exe -m postpro.convergence <run folders...>
-.venv/Scripts/python.exe -m postpro.pressure <run folders...> [--conditions a+10.0_b+00.0] [--stations 60 120 ...]
-.venv/Scripts/python.exe -m postpro.boundary_layer <run folders...> [--conditions a+00.0_b+00.0]
+.venv/Scripts/python.exe -m src.cfd.postpro.summary <run folders...>
+.venv/Scripts/python.exe -m src.cfd.postpro.convergence <run folders...>
+.venv/Scripts/python.exe -m src.cfd.postpro.pressure <run folders...> [--conditions a+10.0_b+00.0] [--stations 60 120 ...]
+.venv/Scripts/python.exe -m src.cfd.postpro.boundary_layer <run folders...> [--conditions a+00.0_b+00.0]
 ```
 
 Each takes run folders, a folder of run folders (a whole batch) or a glob pattern, writes tables and plots to
@@ -308,4 +308,4 @@ control effects against the only undeflected case among the runs, or the one nam
 - **Mirror symmetry:** a case with deflections (left, right) at sideslip β mirrors the case (right, left) at −β, with
   C_Y, C_l, C_n changing sign and left and right surfaces swapping, so every solved case gives two dataset rows.
 - **Collection:** the `results.json` files are collected into a Polars DataFrame, one row per case and condition
-  (deflections, α, β, coefficients, hinge moments, convergence), saved as Parquet for `src/data/loaders.py`.
+  (deflections, α, β, coefficients, hinge moments, convergence), saved as Parquet by `src/data/cfd.py`.

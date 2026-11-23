@@ -1,6 +1,6 @@
 """Summary of solved set points: coefficients, derivatives and control surface hinge moments.
 
-    .venv/Scripts/python.exe -m postpro.summary <run folder | folder of runs> ... [--fit-alpha MIN MAX]
+    .venv/Scripts/python.exe -m src.cfd.postpro.summary <run folder | folder of runs> ... [--fit-alpha MIN MAX]
         [--clean CASE] [--out FOLDER] [--show]
 
 Writes to <out> (default <first path>/postpro/summary/):
@@ -30,7 +30,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import polars as pl
 
-from postpro.common import COEFFICIENTS, find_runs, load_results, output_dir, print_table, run_parser, surfaces_of
+from src.cfd.postpro.common import COEFFICIENTS, find_runs, load_results, output_dir, print_table, run_parser, surfaces_of
 
 MAX_LEGEND_ENTRIES: int = 16  # beyond this the legend would hide the plot
 

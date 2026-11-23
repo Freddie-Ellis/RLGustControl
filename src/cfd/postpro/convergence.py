@@ -1,6 +1,6 @@
 """Convergence of every solve: a table, and coefficient and residual histories.
 
-    .venv/Scripts/python.exe -m postpro.convergence <run folder | folder of runs> ... [--out FOLDER] [--show]
+    .venv/Scripts/python.exe -m src.cfd.postpro.convergence <run folder | folder of runs> ... [--out FOLDER] [--show]
 
 A solve has converged when C_L, C_D and C_m are each within the tolerance of their running mean over the
 window (the test OpenFOAM uses to stop the run; see src/cfd/solve_report.py). Writes to <out> (default
@@ -19,7 +19,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import polars as pl
 
-from postpro.common import find_runs, output_dir, print_table, run_parser, solve_case, solve_dirs
+from src.cfd.postpro.common import find_runs, output_dir, print_table, run_parser, solve_case, solve_dirs
 from src.cfd.solve_report import MONITORED, SolveResult, coefficient_history, gap_from_running_mean, read_table
 
 RESIDUALS: tuple[str, ...] = ("Ux", "Uy", "Uz", "p", "k", "omega")

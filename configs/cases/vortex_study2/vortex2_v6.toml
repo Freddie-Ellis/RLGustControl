@@ -10,7 +10,7 @@
 #   v8  v5 one level finer: 1.5 mm within 60 mm, 3 mm to 100   ~13M cells (v1, v5, v8: a ratio-2 series)
 # Submit with   bash hpc/submit_cases.sh configs/cases/vortex_study2 --mesh-cores 64 --solve-cores 64 \
 #                   --mesh-time 06:00:00 --solve-time 10:00:00
-# Compare with  .venv/Scripts/python.exe -m postpro.pressure <vortex2_v5> <vortex2_v6> <vortex2_v7> <vortex2_v8>
+# Compare with  .venv/Scripts/python.exe -m src.cfd.postpro.pressure <vortex2_v5> <vortex2_v6> <vortex2_v7> <vortex2_v8>
 #               (and the same for the _le30 cases)
 
 description = "Vortex study 2 (clean wing, v6): 1.5 mm cells within 20 mm of the skin, then as v5"

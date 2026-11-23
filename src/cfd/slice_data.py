@@ -27,7 +27,7 @@ from vtkmodules.vtkRenderingCore import vtkColorTransferFunction
 CFD_VIEW_DIR: Path = Path(__file__).resolve().parent.parent / "data" / "cfd_view"  # thin_cases.py's <outdir>, copied
 AXES: tuple[str, ...] = ("x", "y")
 U_INF: float = 20.0  # m/s: sets the velocity colour ranges, and the freestream of a case with no case.json
-CP_RANGE: tuple[float, float] = (-4.0, 1.0)  # as slices.py, wall_cps.py and wall_cp_animation.py
+CP_RANGE: tuple[float, float] = (-4.0, 1.0)  # as slices.py and wall_cp_animation.py
 
 # (value as a fraction of the range, r, g, b): blue - white - red, white placed at 0 by `colour_table`
 _DIVERGING = ((0.23, 0.30, 0.75), (1.0, 1.0, 1.0), (0.71, 0.02, 0.15))  # slices.py DIVERGING, interpolated in Lab

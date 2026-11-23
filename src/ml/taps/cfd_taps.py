@@ -13,6 +13,8 @@ The layout is built in three groups, in this order:
   alpha and beta, so a greedy choice never asks for them, but in a gust they lag and break down on their own;
 - greedy: N_GREEDY_TAPS chosen for the targets, given the LEV taps;
 - uniform: the rest of N_TAPS spread evenly over both skins, for reconstructing the whole Cp field.
+Every group is placed in mirror pairs (y -> -y), so the layout is symmetric like the wing. Only the candidate points
+are mirrored; the runs are used as solved.
 
 Run as a script to build the layout on every run, estimate how well it explains each target on unseen runs by k-fold
 cross-validation, and save the layout and a plot.
@@ -54,7 +56,8 @@ USE_UNCONVERGED: bool = True  # also use runs whose loads never settled: their C
 
 # Layout: LEV taps first, then greedy taps for the targets given those, then an even fill up to N_TAPS.
 N_LEV_TAPS_PER_SIDE: int = 6  # along each leading-edge vortex's footprint, mirrored port/starboard
-N_GREEDY_TAPS: int = 15  # about where the cross-validated error of a purely greedy layout stops falling
+N_GREEDY_TAPS: int = 16  # about where the cross-validated error of a purely greedy layout stops falling; chosen
+# in mirror pairs (see with_mirrors), so even
 LEV_ALPHA_RANGE_DEG: tuple[float, float] = (5.0, 15.0)  # the vortex moves over this range and breaks down near 20 deg;
 # the clean, zero-sideslip runs in it show where its footprint sweeps
 LEV_X_RANGE_M: tuple[float, float] = (0.05, 0.30)  # chordwise span of the LEV stations: the wall Cp images show the
@@ -114,10 +117,44 @@ def candidate_points(reference: pl.DataFrame, spacing: float = CANDIDATE_SPACING
     )
 
 
+def mirror_partners(candidates: pl.DataFrame, spacing: float = CANDIDATE_SPACING_M) -> pl.Series:
+    """Index of each candidate's mirror image across the symmetry plane (y -> -y), null if it has none.
+
+    `candidate_points` keeps one candidate per `spacing` square, and the squares are symmetric about y = 0 (square
+    j spans [j s, (j + 1) s), so its mirror is square -j - 1). So the mirror is the candidate of the mirrored square
+    on the same skin. Candidates within TAP_MIN_SPACING_M / 2 of the centreline are their own mirror: a pair there
+    would be two taps closer together than they can be fitted."""
+    cells = candidates.with_row_index("index").with_columns(
+        cell_x=(pl.col("x") / spacing).floor().cast(pl.Int64), cell_y=(pl.col("y") / spacing).floor().cast(pl.Int64)
+    )
+    partners = cells.select("surface", "cell_x", cell_y=-pl.col("cell_y") - 1, mirror="index")
+    return (
+        cells.join(partners, on=["surface", "cell_x", "cell_y"], how="left", maintain_order="left")
+        .select(
+            pl.when(pl.col("y").abs() < TAP_MIN_SPACING_M / 2).then(pl.col("index")).otherwise(pl.col("mirror"))
+        )
+        .to_series()
+        .alias("mirror")
+    )
+
+
+def with_mirrors(candidates: pl.DataFrame, cp: Tensor) -> tuple[pl.DataFrame, Tensor]:
+    """The candidates that have a mirror image, with a `mirror` column (index of their mirror), and their Cp.
+
+    The wing is symmetric, but the candidates also had to be on every run's skin, so a candidate whose mirror was
+    dropped goes too. Only the geometry is mirrored: the runs are used as solved."""
+    keep = mirror_partners(candidates).is_not_null()
+    if n_dropped := int((~keep).sum()):
+        print(f"dropping {n_dropped} candidates whose mirror image is not a candidate")
+    kept = candidates.filter(keep)
+    return kept.with_columns(mirror_partners(kept)), cp[:, torch.from_numpy(keep.to_numpy())]
+
+
 def as_points(candidates: pl.DataFrame) -> CandidatePoints:
     return CandidatePoints(
         coords=candidates.select("x", "y", "z").to_torch(dtype=pl.Float64),
         surface=candidates["surface"].to_torch(),
+        mirror=candidates["mirror"].to_torch() if "mirror" in candidates.columns else None,
     )
 
 
@@ -175,12 +212,13 @@ def tap_problem(data_dir: Path = CFD_DATA_DIR, targets: tuple[str, ...] = TARGET
     cp, covered = candidate_cp(runs, candidates, data_dir)
     if n_dropped := int((~covered).sum()):
         print(f"dropping {n_dropped} of {len(covered)} candidates that are not on every run's skin")
+    candidates, cp = with_mirrors(candidates.filter(pl.Series(covered.numpy())), cp[:, covered])
     deflections = runs.select(pl.col(DEFLECTIONS))
     known_names = tuple(c for c in deflections.columns if deflections[c].n_unique() > 1)
     return TapProblem(
         runs=runs,
-        candidates=candidates.filter(pl.Series(covered.numpy())),
-        cp=cp[:, covered],
+        candidates=candidates,
+        cp=cp,
         targets=runs.select(targets).to_torch(dtype=pl.Float64),
         known=runs.select(known_names).to_torch(dtype=pl.Float64) if known_names else None,
         target_names=targets,
@@ -271,14 +309,14 @@ def lev_stations(problem: TapProblem) -> list[tuple[float, float]]:
 
 def lev_taps(problem: TapProblem) -> Tensor:
     """Candidate indices of the LEV taps, starboard then port at each station: LEV_TAPS_M if given, else found on the
-    suction ridge (`lev_stations`). Each is snapped to the nearest upper-skin candidate in planform."""
+    suction ridge (`lev_stations`). The starboard tap is snapped to the nearest upper-skin candidate in planform and
+    the port tap is its mirror image."""
     stations = list(LEV_TAPS_M) if LEV_TAPS_M is not None else lev_stations(problem)
-    upper = problem.candidates.with_row_index("index").filter(pl.col("surface") == UPPER)
+    upper = problem.candidates.with_row_index("index").filter(pl.col("surface") == UPPER, pl.col("y") > 0)
     taps = []
     for x, y in stations:
-        for side_y in (y, -y):
-            nearest = upper.sort((pl.col("x") - x) ** 2 + (pl.col("y") - side_y) ** 2)["index"][0]
-            taps.append(int(nearest))
+        starboard = upper.sort((pl.col("x") - x) ** 2 + (pl.col("y") - y) ** 2).row(0, named=True)
+        taps += [starboard["index"], starboard["mirror"]]
     return torch.tensor(taps, dtype=torch.long)
 
 
@@ -359,7 +397,8 @@ def plot_layout(problem: TapProblem, layout: TapLayout, heldout: Tensor | None =
     axes[2].legend(loc="lower left")
     fig.tight_layout(rect=(0, 0, 1, 0.95))
     handles, labels = axes[0].get_legend_handles_labels()  # every group, even one with no tap on the upper skin
-    fig.legend(handles, labels, loc="upper center", ncols=len(GROUP_COLOURS), title="Tap groups (count)")
+    fig.legend(handles, labels, loc="upper center", ncols=len(GROUP_COLOURS), title="Tap groups (count)",
+               facecolor="0.85")  # grey, as the planform backgrounds, so the white uniform marker shows
     PLOTS_DIR.mkdir(exist_ok=True)
     fig.savefig(PLOTS_DIR / "tap_selection.png", dpi=200)
     plt.show()

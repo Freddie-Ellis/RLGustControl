@@ -44,6 +44,9 @@ class CandidatePoints:
 
     coords: Tensor  # (C, 3)
     surface: Tensor  # (C,) int surface id, e.g. 0 = upper, 1 = lower
+    # (C,) index of each point's mirror image across the symmetry plane, itself for a point on it; None if the wing is
+    # not treated as symmetric. With it, taps are chosen and placed in mirror pairs.
+    mirror: Tensor | None = None
 
 
 @dataclass(frozen=True)
@@ -125,6 +128,9 @@ def select_taps(
         greedy taps then go where these leave the targets unexplained. `n_taps` counts them, so with
         `n_taps == len(fixed)` this just scores a given layout: its `unexplained` curve and estimator.
 
+    If `points.mirror` is given, each greedy choice is a mirror pair, scored jointly and placed together (a point on
+    the symmetry plane is one tap on its own), so the layout is symmetric whenever `fixed` is.
+
     cp: (N, C) Cp at every candidate point for each of N cases, from `candidate_cp`.
     targets: (N, K) quantities to estimate from the taps, normally the controlled moments from the
         solver's force report. Constant columns must be dropped.
@@ -162,31 +168,56 @@ def select_taps(
     unexplained = [(t * qt).sum(dim=0) / t_var]
 
     placed = [] if fixed is None else fixed.tolist()
-    for step in range(n_taps):
-        variance = noise + (x * qx).sum(dim=0)  # (C,) uncertainty of each candidate's reading
-        if step < len(placed):
-            j = int(placed[step])
-        else:
-            explained = qt.T @ x  # (K, C) covariance of what is left of each target with each candidate
-            score = (weights[:, None] * explained**2).sum(dim=0) / variance
-            score[~available] = -torch.inf
-            j = int(score.argmax())
-            if not torch.isfinite(score[j]):
-                break  # constraints leave no candidates
+    mirror = points.mirror
+    # True for a point that is its own mirror image (on the symmetry plane), or every point without symmetry
+    single = torch.ones(n_points, dtype=torch.bool) if mirror is None else mirror == torch.arange(n_points)
+
+    def add(j: int) -> None:
+        """Place a tap at candidate j: a rank-1 update of Q x and Q t, then the placement constraints."""
+        variance_j = noise + qx[:, j] @ x[:, j]
         qxj = qx[:, j].clone()
-        qx -= torch.outer(qxj, qxj @ x) / variance[j]
-        qt -= torch.outer(qxj, qxj @ t) / variance[j]
+        qx.sub_(torch.outer(qxj, qxj @ x) / variance_j)
+        qt.sub_(torch.outer(qxj, qxj @ t) / variance_j)
         chosen.append(j)
         unexplained.append((t * qt).sum(dim=0) / t_var)
-
         surface = int(cand_surface[j])
         same_surface = cand_surface == surface
         too_close = (cand_coords - cand_coords[j]).norm(dim=1) < min_spacing
-        available &= ~(same_surface & too_close)
+        available.logical_and_(~(same_surface & too_close))
         available[j] = False
         per_surface[surface] = per_surface.get(surface, 0) + 1
         if max_per_surface is not None and per_surface[surface] >= max_per_surface.get(surface, n_taps):
-            available &= ~same_surface
+            available.logical_and_(~same_surface)
+
+    while len(chosen) < n_taps:
+        if len(chosen) < len(placed):
+            add(int(placed[len(chosen)]))
+            continue
+        variance = noise + (x * qx).sum(dim=0)  # (C,) uncertainty of each candidate's reading
+        explained = qt.T @ x  # (K, C) covariance of what is left of each target with each candidate
+        score = (weights[:, None] * explained**2).sum(dim=0) / variance
+        allowed = available.clone()
+        if mirror is not None:
+            # A pair {j, m} reduces the weighted target variance by e^T V^-1 e, with e = (e_j, e_m) the two readings'
+            # covariances with what is left of a target and V their 2 x 2 covariance (noise on the diagonal). Scored
+            # per tap, so pairs and taps on the symmetry plane compete fairly.
+            cross = (x[:, mirror] * qx).sum(dim=0)  # covariance of each reading with its mirror's, given the taps so far
+            v_m, e_m = variance[mirror], explained[:, mirror]
+            det = variance * v_m - cross**2
+            pair = (weights[:, None] * (v_m * explained**2 - 2 * cross * explained * e_m + variance * e_m**2)).sum(
+                dim=0
+            ) / det
+            score = torch.where(single, score, pair / 2)
+            allowed &= available[mirror]
+            if n_taps - len(chosen) < 2:
+                allowed &= single  # room for one more tap only
+        score[~allowed] = -torch.inf
+        j = int(score.argmax())
+        if not torch.isfinite(score[j]):
+            break  # constraints leave no candidates
+        add(j)
+        if not single[j]:
+            add(int(mirror[j]))  # type: ignore[index]  # not single implies a mirror
 
     picked = torch.tensor(chosen, dtype=torch.long)
     return fit_estimator(cp, targets, picked, known, noise_std, unexplained=torch.stack(unexplained))
@@ -197,18 +228,21 @@ def farthest_point_fill(points: CandidatePoints, taps: Tensor, n_fill: int) -> T
 
     Each new tap goes at the candidate furthest, in planform (x, y), from every tap on its own surface, so the gaps
     are filled largest first. A surface with no tap yet counts as infinitely far, so every surface gets covered.
+    With `points.mirror`, each tap brings its mirror image (while `n_fill` leaves room for both).
     """
     planform = points.coords[:, :2].to(torch.float64)
     gap = torch.full((len(planform),), torch.inf, dtype=torch.float64)  # distance to the nearest same-surface tap
     for j in taps.tolist():
         _shrink_gap(gap, planform, points.surface, j)
     fill: list[int] = []
-    for _ in range(n_fill):
+    while len(fill) < n_fill:
         j = int(gap.argmax())
         if gap[j] <= 0:
             break  # every candidate already holds a tap
-        fill.append(j)
-        _shrink_gap(gap, planform, points.surface, j)
+        pair = [j] if points.mirror is None else list(dict.fromkeys([j, int(points.mirror[j])]))
+        for k in pair[: n_fill - len(fill)]:
+            fill.append(k)
+            _shrink_gap(gap, planform, points.surface, k)
     return torch.tensor(fill, dtype=torch.long)
 
 

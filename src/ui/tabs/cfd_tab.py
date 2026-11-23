@@ -2,13 +2,14 @@
 
 Pick a case and a field, then drag the x or y slider (or use the arrow keys on it). The model and camera are the same
 in every image, so it looks like moving a slice through the flow. Each slider keeps its position when the case or
-field changes, so the same station can be compared across cases.
+field changes, so the same station can be compared across cases. Mouse wheel zooms, dragging pans and a double-click
+fits the whole image; the zoom and pan stay put while sliding, so one region can be followed through the sweep.
 """
 
 from pathlib import Path
 
 from qtpy.QtCore import Qt
-from qtpy.QtGui import QPixmap, QResizeEvent
+from qtpy.QtGui import QPixmap
 from qtpy.QtWidgets import (
     QButtonGroup,
     QComboBox,
@@ -19,13 +20,13 @@ from qtpy.QtWidgets import (
     QLineEdit,
     QPushButton,
     QRadioButton,
-    QSizePolicy,
     QSlider,
     QVBoxLayout,
     QWidget,
 )
 
 from src.cfd import slice_images
+from src.ui.utils.image_view import ImageView
 
 
 class CfdTab(QWidget):
@@ -33,7 +34,6 @@ class CfdTab(QWidget):
         super().__init__()
         self._sweeps: dict[str, list[Path]] = {}  # axis -> images of the current case and field
         self._pixmaps: dict[Path, QPixmap] = {}  # loaded images of the current case
-        self._shown: QPixmap | None = None
 
         # --- source row: folder, case, field ---
         self.folder_edit = QLineEdit(str(slice_images.SLICE_IMAGES_DIR))
@@ -79,11 +79,8 @@ class CfdTab(QWidget):
             sliders.addWidget(position, row, 2)
             self.axis_radio[axis], self.sliders[axis], self.positions[axis] = radio, slider, position
 
-        # --- image ---
-        self.image = QLabel("No slice images found")
-        self.image.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.image.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
-        self.image.setMinimumSize(200, 120)
+        # --- image: wheel to zoom, drag to pan, double-click to fit; zoom and pan stay put while sliding ---
+        self.image = ImageView()
         self.path_label = QLabel()
         self.path_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
 
@@ -157,24 +154,11 @@ class CfdTab(QWidget):
         axis = next(a for a, r in self.axis_radio.items() if r.isChecked())
         images = self._sweeps.get(axis, [])
         if not images:
-            self._shown = None
-            self.image.clear()
-            self.image.setText("No slice images found")
-            self.path_label.clear()
+            self.image.set_pixmap(None)
+            self.path_label.setText("No slice images found")
             return
         path = images[self.sliders[axis].value()]
         if path not in self._pixmaps:
             self._pixmaps[path] = QPixmap(str(path))
-        self._shown = self._pixmaps[path]
+        self.image.set_pixmap(self._pixmaps[path])
         self.path_label.setText(str(path))
-        self._fit()
-
-    def _fit(self) -> None:
-        if self._shown is not None:
-            self.image.setPixmap(self._shown.scaled(
-                self.image.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation,
-            ))
-
-    def resizeEvent(self, event: QResizeEvent) -> None:
-        super().resizeEvent(event)
-        self._fit()

@@ -27,6 +27,7 @@ import matplotlib.pyplot as plt
 import polars as pl
 import torch
 from matplotlib.axes import Axes
+from matplotlib.patches import Rectangle
 from torch import Tensor
 
 from src.config import CONFIG
@@ -106,11 +107,37 @@ def reference_run(runs: pl.DataFrame) -> str:
     return clean["run"][0]
 
 
-def candidate_points(reference: pl.DataFrame, spacing: float = CANDIDATE_SPACING_M,
-                     fuselage_half_width: float = CONFIG.rig.fuselage_half_width_m) -> pl.DataFrame:
-    """One face per `spacing` square in planform (x, y) on each skin: the one nearest the square's centre. Nothing
-    on the fuselage (|y| < `fuselage_half_width`): taps cannot be fitted there."""
-    cells = reference.filter(pl.col("y").abs() >= fuselage_half_width).with_columns((pl.col(c) / spacing).floor().alias(f"cell_{c}") for c in ("x", "y"))
+@dataclass(frozen=True)
+class NoTapZone:
+    """A planform rectangle where taps cannot be fitted, on both skins and mirrored port/starboard."""
+    name: str
+    abs_y: tuple[float, float]
+    x: tuple[float, float]
+
+
+def no_tap_zones() -> list[NoTapZone]:
+    """The fuselage, and the main body further than the allowed distance behind the split flaps (from CONFIG.rig)."""
+    rig = CONFIG.rig
+    inf = float("inf")
+    return [
+        NoTapZone("fuselage", (0.0, rig.fuselage_half_width_m), (-inf, inf)),
+        NoTapZone("behind splitters", rig.splitter_span_m,
+                  (rig.splitter_trailing_edge_x_m + rig.max_tap_behind_splitter_m, inf)),
+    ]
+
+
+def tap_allowed(zones: list[NoTapZone]) -> pl.Expr:
+    """True where a face lies outside every zone."""
+    inside = [pl.col("y").abs().is_between(*z.abs_y, closed="left") & pl.col("x").is_between(*z.x, closed="none")
+              for z in zones]
+    return ~pl.any_horizontal(inside)
+
+
+def candidate_points(reference: pl.DataFrame, spacing: float = CANDIDATE_SPACING_M) -> pl.DataFrame:
+    """One face per `spacing` square in planform (x, y) on each skin: the one nearest the square's centre. None in
+    a `no_tap_zones` zone."""
+    cells = reference.filter(tap_allowed(no_tap_zones())).with_columns(
+        (pl.col(c) / spacing).floor().alias(f"cell_{c}") for c in ("x", "y"))
     off_centre = sum(((pl.col(c) / spacing) - pl.col(f"cell_{c}") - 0.5) ** 2 for c in ("x", "y"))
     return (
         cells.sort(off_centre)
@@ -362,6 +389,14 @@ def _planform(ax: Axes, problem: TapProblem, taps: pl.DataFrame, surface: int, t
     xy = problem.candidates.filter(pl.Series(on_surface))
     scatter = ax.scatter(xy["y"], xy["x"], c=spread, s=2, cmap="viridis")
     plt.colorbar(scatter, ax=ax, label="Cp std across runs")
+    xs = xy["x"].to_numpy()
+    x_lo, x_hi = float(xs.min()), float(xs.max())  # clip the open-ended zones to the wing
+    for i, zone in enumerate(no_tap_zones()):
+        x0, x1 = max(zone.x[0], x_lo), min(zone.x[1], x_hi)
+        y0, y1 = zone.abs_y
+        for lo, hi in ((y0, y1), (-y1, -y0)):
+            ax.add_patch(Rectangle((lo, x0), hi - lo, x1 - x0, facecolor="0.6", hatch="//", edgecolor="0.4",
+                                   linewidth=0, label="no taps" if i == 0 and lo >= 0 else None))
     for group, colour in GROUP_COLOURS.items():
         picked = taps.filter(pl.col("surface") == surface, pl.col("group") == group)
         ax.scatter(picked["y"], picked["x"], s=30, facecolors="none", edgecolors=colour, linewidths=1.2,

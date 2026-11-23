@@ -27,6 +27,11 @@ class RigParams(BaseModel):
     # No pressure taps on the fuselage: |y| below this. The fuselage is part of the main-body mesh, so the tap
     # selection excludes it by span. The fuselage is 100 mm wide, treated as constant width along its length.
     fuselage_half_width_m: float = 0.05
+    # Behind the split flaps (both skins), taps go no further aft than this past the flaps' trailing edge.
+    # Span and trailing edge from the splitter STLs (cad/uav, x 347-372 mm, |y| 50-230 mm).
+    splitter_span_m: tuple[float, float] = (0.05, 0.23)  # |y| range
+    splitter_trailing_edge_x_m: float = 0.372
+    max_tap_behind_splitter_m: float = 0.035
     # Calibration: Cm = My / (q S c).
     q_inf: float = 500.0  # dynamic pressure [Pa], ~29 m/s
     area: float = 0.12  # reference area [m^2]

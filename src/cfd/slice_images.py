@@ -11,7 +11,7 @@ model stays still (model frame), so stepping through a sweep looks like sliding 
 import re
 from pathlib import Path
 
-SLICE_IMAGES_DIR: Path = Path(__file__).resolve().parent.parent / "db" / "cfd"  # slices.py's <outdir>, copied off the HPC
+SLICE_IMAGES_DIR: Path = Path(__file__).resolve().parent.parent / "data" / "cfd"  # slices.py's <outdir>, copied off the HPC
 AXES: tuple[str, ...] = ("x", "y")
 
 _SWEEP = re.compile(r"^(?P<field>.+)_sweep_(?P<axis>[a-z])_(?P<index>\d+)\.png$")

@@ -8,7 +8,13 @@ Turns runs.parquet and the per-run surface tables into the inputs of `select_tap
 - targets: the moment coefficients the controller has to hold;
 - known: the control-surface deflections, which the controller sets itself (only those that vary across runs).
 
-Run as a script to select taps on every run, estimate how well they explain each target on unseen runs by k-fold
+The layout is built in three groups, in this order:
+- LEV: N_LEV_TAPS_PER_SIDE mirrored pairs along the leading-edge vortex footprints. Steady CFD fixes the vortices by
+  alpha and beta, so a greedy choice never asks for them, but in a gust they lag and break down on their own;
+- greedy: N_GREEDY_TAPS chosen for the targets, given the LEV taps;
+- uniform: the rest of N_TAPS spread evenly over both skins, for reconstructing the whole Cp field.
+
+Run as a script to build the layout on every run, estimate how well it explains each target on unseen runs by k-fold
 cross-validation, and save the layout and a plot.
 """
 
@@ -26,6 +32,7 @@ from src.ml.taps.tap_selection import (
     N_TAPS,
     CandidatePoints,
     TapSelection,
+    farthest_point_fill,
     heldout_curve,
     interpolation,
     select_taps,
@@ -44,6 +51,19 @@ FOLDS: int = 5  # cross-validation folds: the error estimate uses every run, the
 SEED: int = 0
 USE_UNCONVERGED: bool = True  # also use runs whose loads never settled: their Cp is the last iteration's snapshot,
 # but their loads are averaged, so Cp and target need not match for them
+
+# Layout: LEV taps first, then greedy taps for the targets given those, then an even fill up to N_TAPS.
+N_LEV_TAPS_PER_SIDE: int = 6  # along each leading-edge vortex's footprint, mirrored port/starboard
+N_GREEDY_TAPS: int = 15  # about where the cross-validated error of a purely greedy layout stops falling
+LEV_ALPHA_RANGE_DEG: tuple[float, float] = (5.0, 15.0)  # the vortex moves over this range and breaks down near 20 deg;
+# the clean, zero-sideslip runs in it show where its footprint sweeps
+LEV_X_RANGE_M: tuple[float, float] = (0.05, 0.30)  # chordwise span of the LEV stations: the wall Cp images show the
+# suction strongest from the apex to about mid-chord
+LEV_ETA_RANGE: tuple[float, float] = (0.5, 0.98)  # where to look, as a fraction of the local semi-span: on this mesh
+# the suction hugs the leading edge
+LEV_TAPS_M: tuple[tuple[float, float], ...] | None = None  # (x, y) of starboard LEV taps placed by hand, y > 0,
+# mirrored to port; None places them where the LEV_ALPHA_RANGE_DEG runs' Cp varies most
+GROUP_COLOURS: dict[str, str] = {"LEV": "orange", "greedy": "red", "uniform": "white"}
 
 OUTPUT_DIR: Path = Path(__file__).parent / "selections"
 PLOTS_DIR: Path = Path(__file__).parent / "plots"
@@ -181,15 +201,15 @@ def folds(problem: TapProblem, n_folds: int = FOLDS, seed: int = SEED) -> list[t
     return pairs
 
 
-def cross_validated_curve(problem: TapProblem, n_folds: int = FOLDS, n_taps: int = N_TAPS) -> Tensor:
-    """Held-out RMS error / training std against number of taps (n_taps + 1, K), over every run.
+def cross_validated_curve(problem: TapProblem, lev: Tensor, n_folds: int = FOLDS) -> Tensor:
+    """Held-out RMS error / training std against number of taps, in layout order (n_taps + 1, K), over every run.
 
-    Each fold selects its own taps on the other runs and is scored on its held-out runs; the folds' squared errors
-    are pooled, weighted by their number of runs. This measures the selection procedure on unseen runs, so a
-    selection made on all runs should do slightly better."""
+    Each fold chooses its own greedy and fill taps on the other runs (the LEV taps stay as given) and is scored on its
+    held-out runs; the folds' squared errors are pooled, weighted by their number of runs. This measures the layout
+    procedure on unseen runs, so a layout made on all runs should do slightly better."""
     curves, sizes = [], []
     for train, test in folds(problem, n_folds):
-        selection = choose_taps(train, n_taps)
+        selection = choose_layout(train, lev).selection
         curves.append(heldout_curve(selection, train.cp, train.targets, test.cp, test.targets, train.known, test.known))
         sizes.append(test.runs.height)
     length = min(len(c) for c in curves)  # a fold can stop early if its constraints run out of candidates
@@ -198,39 +218,116 @@ def cross_validated_curve(problem: TapProblem, n_folds: int = FOLDS, n_taps: int
     return (squared * weights).sum(dim=0).sqrt()
 
 
-def choose_taps(problem: TapProblem, n_taps: int = N_TAPS) -> TapSelection:
-    return select_taps(
-        problem.cp,
-        problem.targets,
-        problem.points,
-        n_taps=n_taps,
-        known=problem.known,
-        min_spacing=TAP_MIN_SPACING_M,
+# ---- Layout ---------------------------------------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class TapLayout:
+    selection: TapSelection  # every tap, in layout order, with the estimator fitted on all of them
+    groups: tuple[str, ...]  # which GROUP_COLOURS group each tap is in, in the same order
+
+
+def lev_runs(runs: pl.DataFrame) -> list[int]:
+    """Rows of the runs with every control surface at 0 deg, no sideslip and alpha in LEV_ALPHA_RANGE_DEG."""
+    rows = runs.with_row_index("row").filter(
+        pl.all_horizontal(pl.col(DEFLECTIONS) == 0),
+        pl.col("beta_deg").abs() < 0.5,
+        pl.col("alpha_deg").is_between(*LEV_ALPHA_RANGE_DEG),
+    )["row"].to_list()
+    if len(rows) < 2:
+        raise ValueError(f"need at least two clean, zero-sideslip runs with alpha in {LEV_ALPHA_RANGE_DEG} deg to see "
+                         f"the vortices move; found {len(rows)}")
+    return rows
+
+
+def lev_stations(problem: TapProblem) -> list[tuple[float, float]]:
+    """(x, y > 0) of each LEV tap pair: at each of N_LEV_TAPS_PER_SIDE stations along LEV_X_RANGE_M, the upper-skin
+    point within LEV_ETA_RANGE of the local semi-span whose Cp varies most over the `lev_runs`, i.e. where the passing
+    vortex changes the pressure most. Averaged over the two sides so the pair is symmetric."""
+    rows = lev_runs(problem.runs)
+    spread = problem.cp[rows].std(dim=0)
+    upper = (
+        problem.candidates.with_row_index("index")
+        .with_columns(spread=pl.Series(spread.numpy()))
+        .filter(pl.col("surface") == UPPER)
     )
+    alphas = sorted(problem.runs["alpha_deg"].gather(rows).to_list())
+    print(f"LEV taps from {len(rows)} clean runs at alpha {', '.join(f'{a:.1f}' for a in alphas)} deg")
+    stations = []
+    for x in torch.linspace(*LEV_X_RANGE_M, N_LEV_TAPS_PER_SIDE).tolist():
+        peaks = []
+        for sign in (1, -1):
+            side = upper.filter((pl.col("x") - x).abs() < CANDIDATE_SPACING_M, pl.col("y") * sign > 0)
+            side = side.with_columns(eta=pl.col("y").abs() / pl.col("y").abs().max())
+            peak = side.filter(pl.col("eta").is_between(*LEV_ETA_RANGE)).sort("spread", descending=True)
+            if peak.is_empty():
+                raise ValueError(f"no upper-skin candidates at x = {x:.3f} m; check LEV_X_RANGE_M")
+            peaks.append(peak.row(0, named=True))
+        y = sum(abs(p["y"]) for p in peaks) / 2
+        print(f"  x = {x:.3f} m: y = +-{y:.3f} m (eta {peaks[0]['eta']:.2f} / {peaks[1]['eta']:.2f}, "
+              f"Cp std {peaks[0]['spread']:.2f} / {peaks[1]['spread']:.2f})")
+        stations.append((x, y))
+    return stations
 
 
-def tap_table(problem: TapProblem, selection: TapSelection) -> pl.DataFrame:
-    """The taps in the order chosen, with their position and the share of each target unexplained once it is added."""
+def lev_taps(problem: TapProblem) -> Tensor:
+    """Candidate indices of the LEV taps, starboard then port at each station: LEV_TAPS_M if given, else found on the
+    suction ridge (`lev_stations`). Each is snapped to the nearest upper-skin candidate in planform."""
+    stations = list(LEV_TAPS_M) if LEV_TAPS_M is not None else lev_stations(problem)
+    upper = problem.candidates.with_row_index("index").filter(pl.col("surface") == UPPER)
+    taps = []
+    for x, y in stations:
+        for side_y in (y, -y):
+            nearest = upper.sort((pl.col("x") - x) ** 2 + (pl.col("y") - side_y) ** 2)["index"][0]
+            taps.append(int(nearest))
+    return torch.tensor(taps, dtype=torch.long)
+
+
+def choose_layout(problem: TapProblem, lev: Tensor, n_greedy: int = N_GREEDY_TAPS, n_taps: int = N_TAPS) -> TapLayout:
+    """The `lev` taps, then `n_greedy` taps chosen for the targets given them, then an even fill up to `n_taps`."""
+    if len(lev) + n_greedy > n_taps:
+        raise ValueError(f"{len(lev)} LEV + {n_greedy} greedy taps is more than the {n_taps} available")
+    greedy = select_taps(
+        problem.cp, problem.targets, problem.points, n_taps=len(lev) + n_greedy, known=problem.known,
+        min_spacing=TAP_MIN_SPACING_M, fixed=lev,
+    )
+    fill = farthest_point_fill(problem.points, greedy.taps, n_taps - len(greedy.taps))
+    taps = torch.cat([greedy.taps, fill])
+    selection = select_taps(  # scores the whole layout in this order: its unexplained curve and estimator
+        problem.cp, problem.targets, problem.points, n_taps=len(taps), known=problem.known, fixed=taps,
+    )
+    groups = ("LEV",) * len(lev) + ("greedy",) * (len(greedy.taps) - len(lev)) + ("uniform",) * len(fill)
+    return TapLayout(selection=selection, groups=groups)
+
+
+def tap_table(problem: TapProblem, layout: TapLayout) -> pl.DataFrame:
+    """The taps in layout order, with their group, position and the share of each target unexplained once added."""
+    selection = layout.selection
     taps = problem.candidates.select(pl.all().gather(selection.taps.tolist()))
     unexplained = {
         f"unexplained_{name}": selection.unexplained[1:, k].numpy() for k, name in enumerate(problem.target_names)
     }
-    return taps.with_row_index("order").with_columns(**{k: pl.Series(v) for k, v in unexplained.items()})
+    return taps.with_row_index("order").with_columns(
+        group=pl.Series(layout.groups), **{k: pl.Series(v) for k, v in unexplained.items()}
+    )
 
 
 # ---- Report ---------------------------------------------------------------------------------------------------------
 
 def _planform(ax: Axes, problem: TapProblem, taps: pl.DataFrame, surface: int, title: str) -> None:
-    """Candidates coloured by how much their Cp varies across runs, with the taps numbered in the order chosen."""
+    """Candidates coloured by how much their Cp varies across runs, with the taps numbered in layout order and
+    outlined in their group's colour."""
     on_surface = (problem.candidates["surface"] == surface).to_numpy()
     spread = problem.cp[:, on_surface].std(dim=0).numpy() if problem.runs.height > 1 else None
     xy = problem.candidates.filter(pl.Series(on_surface))
     scatter = ax.scatter(xy["y"], xy["x"], c=spread, s=2, cmap="viridis")
     plt.colorbar(scatter, ax=ax, label="Cp std across runs")
-    picked = taps.filter(pl.col("surface") == surface)
-    ax.scatter(picked["y"], picked["x"], s=30, facecolors="none", edgecolors="red")
-    for order, y, x in picked.select("order", "y", "x").iter_rows():
-        ax.annotate(str(order), (y, x), fontsize=6, color="red", xytext=(3, 3), textcoords="offset points")
+    for group, colour in GROUP_COLOURS.items():
+        picked = taps.filter(pl.col("surface") == surface, pl.col("group") == group)
+        ax.scatter(picked["y"], picked["x"], s=30, facecolors="none", edgecolors=colour, linewidths=1.2,
+                   label=f"{group} ({taps.filter(pl.col('group') == group).height})")
+        for order, y, x in picked.select("order", "y", "x").iter_rows():
+            ax.annotate(str(order), (y, x), fontsize=6, color=colour, xytext=(3, 3), textcoords="offset points")
+    ax.set_facecolor("0.85")  # so the white uniform taps show off the wing
     ax.set_aspect("equal")
     ax.invert_yaxis()  # nose at the top
     ax.set_xlabel("y [m]")
@@ -238,10 +335,12 @@ def _planform(ax: Axes, problem: TapProblem, taps: pl.DataFrame, surface: int, t
     ax.set_title(title)
 
 
-def plot_selection(problem: TapProblem, selection: TapSelection, heldout: Tensor | None = None) -> None:
-    """Tap layout on both skins, and the unexplained target variance against number of taps: on the runs the taps
-    were selected on and, if `heldout` (held-out RMS error / training std per tap count) is given, on unseen runs."""
-    taps = tap_table(problem, selection)
+def plot_layout(problem: TapProblem, layout: TapLayout, heldout: Tensor | None = None) -> None:
+    """Tap layout on both skins, and the unexplained target variance against number of taps in layout order: on the
+    runs the layout was made on and, if `heldout` (held-out RMS error / training std per tap count) is given, on
+    unseen runs. Dotted lines mark where each group of taps ends."""
+    selection = layout.selection
+    taps = tap_table(problem, layout)
     fig, axes = plt.subplots(1, 3, figsize=(18, 7))
     _planform(axes[0], problem, taps, UPPER, "Upper skin (seen from above)")
     _planform(axes[1], problem, taps, LOWER, "Lower skin (seen from above)")
@@ -250,10 +349,17 @@ def plot_selection(problem: TapProblem, selection: TapSelection, heldout: Tensor
         if heldout is not None:
             # (RMS error / training std)^2 is the held-out counterpart of the training variance fraction
             axes[2].semilogy(heldout[:, k].pow(2).numpy(), "--", color=line.get_color(), label=f"{name} cross-validated")
-    axes[2].set_xlabel("Taps")
+    end = 0
+    for group in GROUP_COLOURS:
+        end += layout.groups.count(group)
+        axes[2].axvline(end, color="0.5", linestyle=":", linewidth=1)
+        axes[2].text(end, 1.0, f" {group} ", transform=axes[2].get_xaxis_transform(), ha="right", va="top", fontsize=8)
+    axes[2].set_xlabel("Taps (layout order)")
     axes[2].set_ylabel("Unexplained fraction of target variance")
-    axes[2].legend()
-    fig.tight_layout()
+    axes[2].legend(loc="lower left")
+    fig.tight_layout(rect=(0, 0, 1, 0.95))
+    handles, labels = axes[0].get_legend_handles_labels()  # every group, even one with no tap on the upper skin
+    fig.legend(handles, labels, loc="upper center", ncols=len(GROUP_COLOURS), title="Tap groups (count)")
     PLOTS_DIR.mkdir(exist_ok=True)
     fig.savefig(PLOTS_DIR / "tap_selection.png", dpi=200)
     plt.show()
@@ -265,20 +371,21 @@ def main() -> None:
         f"{problem.runs.height} runs, {problem.candidates.height} candidates, "
         f"targets {problem.target_names}, known {problem.known_names}"
     )
-    selection = choose_taps(problem)  # the layout to build: every run, for full coverage
-    taps = tap_table(problem, selection)
+    lev = lev_taps(problem)
+    layout = choose_layout(problem, lev)  # the layout to build: every run, for full coverage
+    taps = tap_table(problem, layout)
     with pl.Config(tbl_rows=-1):
         print(taps)
-    heldout = cross_validated_curve(problem)
+    heldout = cross_validated_curve(problem, lev)
     for k, name in enumerate(problem.target_names):
-        best = int(heldout[:, k].argmin())
-        print(
-            f"{name} {FOLDS}-fold cross-validated RMS error / training std: {heldout[-1, k]:.3f} with all "
-            f"{len(heldout) - 1} taps, lowest {heldout[best, k]:.3f} with the first {best}"
-        )
+        end = 0
+        for group in GROUP_COLOURS:
+            end += layout.groups.count(group)
+            print(f"{name} {FOLDS}-fold cross-validated RMS error / training std after the {group} taps "
+                  f"({end} taps): {heldout[end, k]:.3f}")
     OUTPUT_DIR.mkdir(exist_ok=True)
     taps.write_parquet(OUTPUT_DIR / "taps.parquet")
-    plot_selection(problem, selection, heldout)
+    plot_layout(problem, layout, heldout)
 
 
 if __name__ == "__main__":

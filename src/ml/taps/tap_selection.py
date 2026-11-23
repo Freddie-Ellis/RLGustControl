@@ -117,8 +117,13 @@ def select_taps(
     noise_std: float = SENSOR_NOISE_CP,
     min_spacing: float = 0.0,
     max_per_surface: dict[int, int] | None = None,
+    fixed: Tensor | None = None,
 ) -> TapSelection:
     """Greedily choose `n_taps` tap locations.
+
+    fixed: candidate indices placed first, in this order, before any greedy choice (e.g. taps placed by hand). The
+        greedy taps then go where these leave the targets unexplained. `n_taps` counts them, so with
+        `n_taps == len(fixed)` this just scores a given layout: its `unexplained` curve and estimator.
 
     cp: (N, C) Cp at every candidate point for each of N cases, from `candidate_cp`.
     targets: (N, K) quantities to estimate from the taps, normally the controlled moments from the
@@ -156,14 +161,18 @@ def select_taps(
     chosen: list[int] = []
     unexplained = [(t * qt).sum(dim=0) / t_var]
 
-    for _ in range(n_taps):
+    placed = [] if fixed is None else fixed.tolist()
+    for step in range(n_taps):
         variance = noise + (x * qx).sum(dim=0)  # (C,) uncertainty of each candidate's reading
-        explained = qt.T @ x  # (K, C) covariance of what is left of each target with each candidate
-        score = (weights[:, None] * explained**2).sum(dim=0) / variance
-        score[~available] = -torch.inf
-        j = int(score.argmax())
-        if not torch.isfinite(score[j]):
-            break  # constraints leave no candidates
+        if step < len(placed):
+            j = int(placed[step])
+        else:
+            explained = qt.T @ x  # (K, C) covariance of what is left of each target with each candidate
+            score = (weights[:, None] * explained**2).sum(dim=0) / variance
+            score[~available] = -torch.inf
+            j = int(score.argmax())
+            if not torch.isfinite(score[j]):
+                break  # constraints leave no candidates
         qxj = qx[:, j].clone()
         qx -= torch.outer(qxj, qxj @ x) / variance[j]
         qt -= torch.outer(qxj, qxj @ t) / variance[j]
@@ -181,6 +190,31 @@ def select_taps(
 
     picked = torch.tensor(chosen, dtype=torch.long)
     return fit_estimator(cp, targets, picked, known, noise_std, unexplained=torch.stack(unexplained))
+
+
+def farthest_point_fill(points: CandidatePoints, taps: Tensor, n_fill: int) -> Tensor:
+    """`n_fill` more taps spread evenly over the wing, around the `taps` already placed. (n_fill,) candidate indices.
+
+    Each new tap goes at the candidate furthest, in planform (x, y), from every tap on its own surface, so the gaps
+    are filled largest first. A surface with no tap yet counts as infinitely far, so every surface gets covered.
+    """
+    planform = points.coords[:, :2].to(torch.float64)
+    gap = torch.full((len(planform),), torch.inf, dtype=torch.float64)  # distance to the nearest same-surface tap
+    for j in taps.tolist():
+        _shrink_gap(gap, planform, points.surface, j)
+    fill: list[int] = []
+    for _ in range(n_fill):
+        j = int(gap.argmax())
+        if gap[j] <= 0:
+            break  # every candidate already holds a tap
+        fill.append(j)
+        _shrink_gap(gap, planform, points.surface, j)
+    return torch.tensor(fill, dtype=torch.long)
+
+
+def _shrink_gap(gap: Tensor, planform: Tensor, surface: Tensor, tap: int) -> None:
+    same = surface == surface[tap]
+    gap[same] = torch.minimum(gap[same], (planform[same] - planform[tap]).norm(dim=1))
 
 
 def fit_estimator(

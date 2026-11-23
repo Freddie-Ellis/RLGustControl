@@ -14,7 +14,7 @@ class RigParams(BaseModel):
     the tap selection all read them from `CONFIG.rig`. A run's config.json records the copy it ran with."""
     model_config = ConfigDict(extra="forbid")
 
-    n_taps: int = 50
+    n_taps: int = 48
     n_surfaces: int = 12
     # Travel of every control surface. 0 deg is neutral (flush with the wing): the safe state, and where the
     # surfaces sit in a baseline episode. The policy's action -1..1 maps linearly onto min..max.

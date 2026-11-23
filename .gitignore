@@ -16,7 +16,6 @@ __pycache__/
 
 # Ignore CFD data
 /src/data/cfd/
-/src/db/cfd/
 
 # Ignore Data
 /data/*

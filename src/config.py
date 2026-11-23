@@ -23,15 +23,21 @@ class RigParams(BaseModel):
     # The splitter surfaces only open one way, from 0 deg (closed) up to their own maximum.
     splitter_surfaces: tuple[int, ...] = (8, 9, 10, 11)  # placeholder: which surfaces are splitters
     splitter_max_deg: float = 70  # placeholder
+    # The leading-edge flaps (le_flap_r, le_flap_l in the solver's surface order). The rig moves them over the full
+    # travel; only the CFD mesh limits them (see latin_hyper.LEADING_EDGE_MAX_ABS_DEG).
+    leading_edge_surfaces: tuple[int, ...] = (2, 3)
     # Calibration: Cm = My / (q S c).
     q_inf: float = 500.0  # dynamic pressure [Pa], ~29 m/s
     area: float = 0.12  # reference area [m^2]
     mac: float = 0.35  # mean aerodynamic chord [m]
 
     @model_validator(mode="after")
-    def _check_splitters(self) -> Self:
-        if bad := [k for k in self.splitter_surfaces if not 0 <= k < self.n_surfaces]:
-            raise ValueError(f"splitter_surfaces {bad} are not surfaces 0..{self.n_surfaces - 1}")
+    def _check_surfaces(self) -> Self:
+        for name in ("splitter_surfaces", "leading_edge_surfaces"):
+            if bad := [k for k in getattr(self, name) if not 0 <= k < self.n_surfaces]:
+                raise ValueError(f"{name} {bad} are not surfaces 0..{self.n_surfaces - 1}")
+        if both := set(self.splitter_surfaces) & set(self.leading_edge_surfaces):
+            raise ValueError(f"surfaces {sorted(both)} are listed as both splitters and leading-edge flaps")
         return self
 
     @property

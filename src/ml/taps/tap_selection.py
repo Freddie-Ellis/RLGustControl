@@ -2,8 +2,8 @@
 
 Taps can only go on parts of the wing that never move, so the candidates are a fixed set of points
 there (e.g. the undeflected case's surface nodes away from the actuators). Every case is remeshed
-around its deflected actuators, so its surface Cp is first interpolated onto these points with
-`candidate_cp`; after that, column j means the same physical point in every case. The targets
+around its deflected actuators, so its surface Cp is first interpolated onto these points with an
+`Interpolation` built once per mesh; after that, column j means the same physical point in every case. The targets
 (normally the moments the controller has to hold) come from the solver's own force report, which
 integrates over each case's full deflected surface.
 
@@ -35,7 +35,7 @@ N_TAPS: int = CONFIG.rig.n_taps  # the wing itself is defined once, in src/confi
 SENSOR_NOISE_CP: float = 0.005  # placeholder: tap measurement noise std, in Cp
 KNOWN_JITTER: float = 1e-10  # keeps the estimator solve well posed; known inputs are noise free
 INTERP_NEIGHBOURS: int = 4  # case surface nodes used to interpolate Cp at each candidate point
-INTERP_CHUNK: int = 2048  # candidate points per distance computation, bounds memory
+INTERP_CHUNK: int = 512  # candidate points per distance computation, bounds memory (chunk x nodes doubles)
 
 
 @dataclass(frozen=True)
@@ -47,40 +47,43 @@ class CandidatePoints:
 
 
 @dataclass(frozen=True)
-class CaseSurface:
-    """One CFD case's surface solution on its own (remeshed) surface nodes."""
+class Interpolation:
+    """Linear map from Cp on one mesh's surface nodes to Cp at the candidate points.
 
-    coords: Tensor  # (M, 3) node positions
-    surface: Tensor  # (M,) int surface id, same convention as CandidatePoints
-    cp: Tensor  # (M,)
-
-
-def interpolate_cp(case: CaseSurface, points: CandidatePoints, max_distance: float | None = None) -> Tensor:
-    """Cp at each candidate point (C,), by inverse-distance weighting of the nearest case nodes.
-
-    Only nodes on the same surface are used, so thin edges never mix upper and lower pressures.
-    If `max_distance` is given, raise when a point's nearest node is further than that, which
-    means the point is not on this case's surface (e.g. it sits on a moved actuator).
+    Every run of one mesh shares it, so the neighbour search is done once per mesh, not per run.
     """
-    cp = torch.empty(len(points.coords), dtype=torch.float64)
-    for surface in points.surface.unique().tolist():
-        at_points = (points.surface == surface).nonzero().squeeze(1)
-        on_case = case.surface == surface
-        nodes = case.coords[on_case].to(torch.float64)
-        node_cp = case.cp[on_case].to(torch.float64)
-        k = min(INTERP_NEIGHBOURS, len(nodes))
-        for chunk in at_points.split(INTERP_CHUNK):
-            dist, idx = torch.cdist(points.coords[chunk].to(torch.float64), nodes).topk(k, largest=False)
-            if max_distance is not None and (dist[:, 0] > max_distance).any():
-                raise ValueError(f"candidate points on surface {surface} are not on this case's surface")
-            weights = 1.0 / dist.clamp_min(1e-12)
-            cp[chunk] = (weights * node_cp[idx]).sum(dim=1) / weights.sum(dim=1)
-    return cp
+
+    nodes: Tensor  # (C, k) mesh nodes used for each candidate point
+    weights: Tensor  # (C, k) inverse-distance weights, each row sums to 1
+    nearest: Tensor  # (C,) distance to the nearest node: large means the point is not on this mesh's surface
+
+    def __call__(self, node_cp: Tensor) -> Tensor:
+        """Cp on the mesh nodes (..., M) -> Cp at the candidate points (..., C)."""
+        return (node_cp.to(torch.float64)[..., self.nodes] * self.weights).sum(dim=-1)
 
 
-def candidate_cp(cases: list[CaseSurface], points: CandidatePoints, max_distance: float | None = None) -> Tensor:
-    """(N, C) Cp at every candidate point for each of N cases."""
-    return torch.stack([interpolate_cp(case, points, max_distance) for case in cases])
+def interpolation(coords: Tensor, surface: Tensor, points: CandidatePoints) -> Interpolation:
+    """Inverse-distance weighting of the `INTERP_NEIGHBOURS` nearest mesh nodes (M, 3) to each candidate point.
+
+    Only nodes with the same surface id (M,) are used, so thin edges never mix upper and lower pressures.
+    """
+    n_points = len(points.coords)
+    k = INTERP_NEIGHBOURS
+    nodes = torch.zeros(n_points, k, dtype=torch.long)
+    weights = torch.zeros(n_points, k, dtype=torch.float64)
+    nearest = torch.full((n_points,), torch.inf, dtype=torch.float64)
+    for s in points.surface.unique().tolist():
+        on_mesh = (surface == s).nonzero().squeeze(1)
+        if len(on_mesh) < k:
+            continue  # no nodes on this surface: its points stay at infinite distance
+        mesh_coords = coords[on_mesh].to(torch.float64)
+        for chunk in (points.surface == s).nonzero().squeeze(1).split(INTERP_CHUNK):
+            dist, idx = torch.cdist(points.coords[chunk].to(torch.float64), mesh_coords).topk(k, largest=False)
+            inverse = 1.0 / dist.clamp_min(1e-12)
+            nodes[chunk] = on_mesh[idx]
+            weights[chunk] = inverse / inverse.sum(dim=1, keepdim=True)
+            nearest[chunk] = dist[:, 0]
+    return Interpolation(nodes=nodes, weights=weights, nearest=nearest)
 
 
 @dataclass(frozen=True)
@@ -91,6 +94,7 @@ class TapSelection:
     pressure_mean: Tensor  # (n_taps,) mean Cp at each tap over the training cases
     known_mean: Tensor  # (J,) mean of each known input; J = 0 if none were given
     target_mean: Tensor  # (K,)
+    target_std: Tensor  # (K,) over the training cases, the scale errors are reported in
     estimator: Tensor  # (J + n_taps, K) linear map from [known inputs, tap pressures] to targets
 
     def estimate(self, tap_cp: Tensor, known: Tensor | None = None) -> Tensor:
@@ -186,6 +190,7 @@ def select_taps(
         pressure_mean=cp[:, picked].to(dtype).mean(dim=0),
         known_mean=torch.empty(0, dtype=dtype) if known is None else known.to(dtype).mean(dim=0),
         target_mean=targets.to(dtype).mean(dim=0),
+        target_std=targets.to(dtype).std(dim=0),
         estimator=estimator,
     )
 
@@ -197,13 +202,14 @@ def evaluate(
     known: Tensor | None = None,
     noise_std: float = SENSOR_NOISE_CP,
 ) -> Tensor:
-    """RMS estimation error of each target on (held-out) cases, as a fraction of its std. (K,)
+    """RMS estimation error of each target on (held-out) cases, as a fraction of its std over the training cases. (K,)
 
-    cp: (N, C) Cp at the candidate points, as passed to `select_taps`.
+    cp: (N, C) Cp at the candidate points, as passed to `select_taps`. Using the training std keeps the scale
+    meaningful however few held-out cases there are.
 
     Sensor noise of `noise_std` is added to the tap readings.
     """
     tap_cp = cp[:, selection.taps].to(torch.float64)
     tap_cp = tap_cp + noise_std * torch.randn_like(tap_cp)
     error = selection.estimate(tap_cp, known) - targets.to(torch.float64)
-    return error.pow(2).mean(dim=0).sqrt() / targets.to(torch.float64).std(dim=0)
+    return error.pow(2).mean(dim=0).sqrt() / selection.target_std

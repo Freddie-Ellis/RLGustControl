@@ -3,7 +3,8 @@
 Inputs are the 12 actuator angles, angle of attack and sideslip. The splitter actuators
 (`CONFIG.rig.splitter_surfaces`) are either closed or open between `SPLITTER_MIN_OPEN_DEG` and
 `splitter_max_deg`, a limit of the CFD mesh (the rig has no dead zone); `SPLITTER_CLOSED_FRACTION`
-of the LHS cases have each one closed. Gusts from the active grid
+of the LHS cases have each one closed. The leading-edge flaps (`CONFIG.rig.leading_edge_surfaces`)
+are kept within +-`LEADING_EDGE_MAX_ABS_DEG`, another limit of the CFD mesh. Gusts from the active grid
 change the effective AoA and sideslip, so steady RANS over these ranges covers the quasi-steady
 gust response.
 
@@ -30,11 +31,13 @@ ACTUATOR_MAX_DEG: float = CONFIG.rig.actuator_max_deg
 AOA_MIN_DEG: float = 0
 AOA_MAX_DEG: float = 25
 NOMINAL_AOA_DEG: float = 10.0  # placeholder: AoA the wing normally flies at
-SIDESLIP_MAX_DEG: float = 10.0  # placeholder: largest sideslip the active grid's gusts produce
+SIDESLIP_MAX_DEG: float = 10.0 
 ANGLE_RESOLUTION_DEG: float = 0.5  # smallest angle step the CFD setup / mesh deformation can use
 # The CFD mesh can't deform a splitter to a small opening: it is either closed or open by at least this much.
 SPLITTER_MIN_OPEN_DEG: float = 20.0
 SPLITTER_CLOSED_FRACTION: float = 0.2  # share of LHS cases with each splitter closed
+# The CFD mesh can't deform a leading-edge flap further than this either way (the rig can).
+LEADING_EDGE_MAX_ABS_DEG: float = 30.0
 
 AOA_SWEEP_STEP_DEG: float = 1.0
 SIDESLIP_SWEEP_STEP_DEG: float = 2.0
@@ -85,6 +88,12 @@ def actuator_input(k: int) -> DesignInput:
             lower=float(rig.min_deg[k]),  # closed: flush with the wing
             upper=rig.splitter_max_deg,
             open_min=SPLITTER_MIN_OPEN_DEG,
+        )
+    if k in rig.leading_edge_surfaces:
+        return DesignInput(
+            name=actuator_name(k),
+            lower=max(ACTUATOR_MIN_DEG, -LEADING_EDGE_MAX_ABS_DEG),
+            upper=min(ACTUATOR_MAX_DEG, LEADING_EDGE_MAX_ABS_DEG),
         )
     return DesignInput(name=actuator_name(k), lower=ACTUATOR_MIN_DEG, upper=ACTUATOR_MAX_DEG)
 
@@ -239,7 +248,7 @@ def cfd_cases(n_lhs: int, existing: pl.DataFrame | None = None, seed: int = 0) -
 def main() -> None:
     cases = cfd_cases(n_lhs=120)
     print(cases["kind"].value_counts(sort=True))
-    cases.write_csv(CASES_DIR / "cfd_cases1.csv")
+    cases.write_csv(CASES_DIR / "cfd_cases_onemoretime.csv")
 
 
 if __name__ == "__main__":

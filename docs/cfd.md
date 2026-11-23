@@ -33,6 +33,7 @@ waits on the mesh choice. Collecting results into a dataset is planned.
 | `src/cfd/submit.py` | Submits mesh and solve jobs to Slurm, skipping finished work (run through `hpc/submit_cases.sh`) |
 | `src/cfd/runs.py` | Lists every run and its state, read from the run folders |
 | `src/cfd/batch_cases.py` | Turns a table of cases (deflections, α, β) into case files, one per set of deflections |
+| `src/cfd/dataset.py` | Collects every solved set point into `setpoints.parquet` / `.csv` (per-part coefficients with window statistics), plus each set point's coefficient histories |
 
 | Post-processing (`postpro/`, run locally on downloaded run folders) | Purpose |
 |---|---|
@@ -304,8 +305,15 @@ Each takes run folders, a folder of run folders (a whole batch) or a glob patter
 comparison, list the meshes coarse to fine: `pressure.py` compares each run with the last one. `summary.py` measures
 control effects against the only undeflected case among the runs, or the one named with `--clean`.
 
-## 7. Dataset (planned)
-- **Mirror symmetry:** a case with deflections (left, right) at sideslip β mirrors the case (right, left) at −β, with
-  C_Y, C_l, C_n changing sign and left and right surfaces swapping, so every solved case gives two dataset rows.
-- **Collection:** the `results.json` files are collected into a Polars DataFrame, one row per case and condition
-  (deflections, α, β, coefficients, hinge moments, convergence), saved as Parquet for `src/data/loaders.py`.
+## 7. Dataset
+- **Collection:** on Iridis, `python -m src.cfd.dataset --cases "batch2_*"` reads every solve's force histories and
+  writes `<runs dir>/dataset/`: `setpoints.parquet` and `.csv` (one row per case and condition) and
+  `history/<case>/<condition>.parquet` (coefficients at every iteration). Download that folder.
+- **Contents of a row:** the case's deflections, labels (`family`, `mode`, `delta_deg`) and mesh quality; the reference
+  values and hinge geometry; the flow condition and the drag, lift and side directions; convergence; and, for each part
+  (`total`, `body` and every control surface), C_L, C_D, C_Y, C_l, C_m, C_n (and C_h for surfaces) as mean, min, max and
+  std over the final window (the solver's 200-iteration convergence window by default). Every part uses the
+  aircraft's reference values and moment point, so the parts add up to the total; the row holds everything needed to
+  turn the coefficients back into forces and moments (see the module docstring).
+- **Mirror symmetry (planned):** a case with deflections (left, right) at sideslip β mirrors the case (right, left) at
+  −β, with C_Y, C_l, C_n changing sign and left and right surfaces swapping, so every solved case gives two rows.

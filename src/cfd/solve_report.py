@@ -27,8 +27,11 @@ import json
 import math
 import shutil
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
+
+import numpy as np
 
 from src.cfd.geometry import StrictModel
 
@@ -85,7 +88,7 @@ def read_table(path_pattern: str, folder: Path) -> tuple[list[str], list[list[fl
     return columns, [by_time[t] for t in sorted(by_time)]
 
 
-def _vectors(columns: list[str], rows: list[list[float]], prefix: str = "total") -> list[tuple[float, float, float]]:
+def vectors(columns: list[str], rows: list[list[float]], prefix: str = "total") -> list[tuple[float, float, float]]:
     """The (x, y, z) columns named <prefix>_x/y/z, or, in older OpenFOAM formats without names, the sum of the
     pressure and viscous parts that follow the time column."""
     if f"{prefix}_x" in columns:
@@ -94,8 +97,8 @@ def _vectors(columns: list[str], rows: list[list[float]], prefix: str = "total")
     return [(r[1] + r[4], r[2] + r[5], r[3] + r[6]) for r in rows]
 
 
-def _window(values: list[float]) -> WindowValue:
-    return WindowValue(mean=sum(values) / len(values), range=max(values) - min(values))
+def _window(values: Sequence[float] | np.ndarray) -> WindowValue:
+    return WindowValue(mean=float(sum(values) / len(values)), range=float(max(values) - min(values)))
 
 
 def _dot(a: tuple[float, float, float] | list[float], b: tuple[float, float, float] | list[float]) -> float:
@@ -117,43 +120,56 @@ def _aircraft_loads(solve_dir: Path) -> tuple[list[float], list[Vec3], list[Vec3
     if not force_rows or not moment_rows:
         raise FileNotFoundError(f"{post}: no forces_aircraft output (did simpleFoam run?)")
     n = min(len(force_rows), len(moment_rows))
-    return ([r[0] for r in force_rows[:n]], _vectors(force_cols, force_rows)[:n],
-            _vectors(moment_cols, moment_rows)[:n])
+    return ([r[0] for r in force_rows[:n]], vectors(force_cols, force_rows)[:n],
+            vectors(moment_cols, moment_rows)[:n])
 
 
-def _coefficients(info: dict[str, Any], forces: list[Vec3], moments: list[Vec3]) -> dict[str, list[float]]:
-    """C_L, C_D, C_Y, C_l, C_m, C_n for each force and moment (see the module docstring)."""
+def wind_axes(info: dict[str, Any]) -> tuple[Vec3, Vec3, Vec3]:
+    """Unit vectors, in the model frame, that drag, lift and side force are measured along: the freestream, the
+    lift direction (see solve.py) and lift x freestream (to starboard). `info` is solve_case.json."""
+    speed = info["settings"]["speed"]
+    u = info["freestream_velocity_m_s"]
+    drag_dir: Vec3 = (u[0] / speed, u[1] / speed, u[2] / speed)
+    lift = info["lift_direction"]
+    lift_dir: Vec3 = (lift[0], lift[1], lift[2])
+    return drag_dir, lift_dir, _cross(lift_dir, drag_dir)
+
+
+def force_coefficients(info: dict[str, Any], forces: Sequence[Vec3] | np.ndarray,
+                       moments: Sequence[Vec3] | np.ndarray) -> dict[str, np.ndarray]:
+    """C_L, C_D, C_Y, C_l, C_m, C_n for each force and moment (model frame, moments about the reference point;
+    see the module docstring). `info` is solve_case.json."""
     settings, reference = info["settings"], info["reference"]
     q = 0.5 * settings["density"] * settings["speed"] ** 2
     area, chord, span = reference["area_m2"], reference["length_m"], reference["span_m"]
-    drag_dir = [c / settings["speed"] for c in info["freestream_velocity_m_s"]]
-    lift_dir = info["lift_direction"]
-    side_dir = _cross(lift_dir, drag_dir)
+    drag_dir, lift_dir, side_dir = (np.array(d) for d in wind_axes(info))
+    f = np.asarray(forces, dtype=float).reshape(-1, 3)
+    m = np.asarray(moments, dtype=float).reshape(-1, 3)
     return {
-        "C_L": [_dot(f, lift_dir) / (q * area) for f in forces],
-        "C_D": [_dot(f, drag_dir) / (q * area) for f in forces],
-        "C_Y": [_dot(f, side_dir) / (q * area) for f in forces],
-        "C_l": [-m[0] / (q * area * span) for m in moments],
-        "C_m": [m[1] / (q * area * chord) for m in moments],
-        "C_n": [-m[2] / (q * area * span) for m in moments],
+        "C_L": f @ lift_dir / (q * area),
+        "C_D": f @ drag_dir / (q * area),
+        "C_Y": f @ side_dir / (q * area),
+        "C_l": -m[:, 0] / (q * area * span),
+        "C_m": m[:, 1] / (q * area * chord),
+        "C_n": -m[:, 2] / (q * area * span),
     }
 
 
-def coefficient_history(solve_dir: Path) -> tuple[list[float], dict[str, list[float]]]:
+def coefficient_history(solve_dir: Path) -> tuple[list[float], dict[str, np.ndarray]]:
     """Iterations, and the aircraft's coefficients at each, as averaged for results.json (for plotting)."""
     info = json.loads((solve_dir / "solve_case.json").read_text())
     iterations, forces, moments = _aircraft_loads(solve_dir)
-    return iterations, _coefficients(info, forces, moments)
+    return iterations, force_coefficients(info, forces, moments)
 
 
-def gap_from_running_mean(values: list[float], window: int) -> float:
+def gap_from_running_mean(values: Sequence[float] | np.ndarray, window: int) -> float:
     """|last value - running mean|, the mean as OpenFOAM's runTimeControl `average` condition computes it
     (windowType approximate): the plain mean of the first `window` values, after which each new value has
     weight 1 / window."""
     mean = values[0]
     for n, value in enumerate(values[1:], start=2):
         mean += (value - mean) / min(n, window)
-    return abs(values[-1] - mean)
+    return float(abs(values[-1] - mean))
 
 
 def build_result(solve_dir: Path) -> SolveResult:
@@ -172,7 +188,7 @@ def build_result(solve_dir: Path) -> SolveResult:
     forces, moments = all_forces[-window:], all_moments[-window:]
     q = 0.5 * settings["density"] * settings["speed"] ** 2
     area, chord = reference["area_m2"], reference["length_m"]
-    history = _coefficients(info, all_forces, all_moments)
+    history = force_coefficients(info, all_forces, all_moments)
     coefficients = {name: _window(values[-window:]) for name, values in history.items()}
     gaps = {name: gap_from_running_mean(history[name], int(settings["convergence_window"])) for name in MONITORED}
     # Like OpenFOAM, only judge once a full window has been averaged.
@@ -190,7 +206,7 @@ def build_result(solve_dir: Path) -> SolveResult:
         if not rows:
             warnings.append(f"no forces_{name} output")
             continue
-        about_hinge = [_dot(m, hinge["direction"]) for m in _vectors(cols, rows)[-window:]]
+        about_hinge = [_dot(m, hinge["direction"]) for m in vectors(cols, rows)[-window:]]
         hinge_moment[name] = _window(about_hinge)
         hinge_coefficient[name] = _window([m / (q * area * chord) for m in about_hinge])
 

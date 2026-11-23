@@ -6,6 +6,7 @@ from qtpy.QtGui import QCloseEvent, QShortcut
 from qtpy.QtWidgets import QMainWindow, QTabWidget
 
 from src.config import CONFIG
+from src.ui.tabs.cfd_tab import CfdTab
 from src.ui.tabs.compare_tab import CompareTab
 from src.ui.tabs.rollout_tab import RolloutTab
 from src.ui.tabs.runs_tab import RunsTab
@@ -24,6 +25,7 @@ class MainWindow(QMainWindow):
         self.train = TrainTab()
         self.session = SessionTab()
         self.compare = CompareTab()
+        self.cfd = CfdTab()
         self.profiler: cProfile.Profile | None = None  # a profile of the UI being taken now, if any
 
         self.profile_shortcut = QShortcut("Ctrl+Shift+P", self)
@@ -35,6 +37,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.train, "Train")
         self.tabs.addTab(self.session, "SAC Session")
         self.tabs.addTab(self.compare, "Compare")
+        self.tabs.addTab(self.cfd, "CFD")
         self.setCentralWidget(self.tabs)
 
         self.runs.replay_requested.connect(self._replay)

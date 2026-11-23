@@ -21,15 +21,12 @@ class RigParams(BaseModel):
     actuator_min_deg: float = -50
     actuator_max_deg: float = 50
     # The splitter surfaces only open one way, from 0 deg (closed) up to their own maximum.
-    splitter_surfaces: tuple[int, ...] = (8, 9, 10, 11)  # placeholder: which surfaces are splitters
-    splitter_max_deg: float = 70  # placeholder
-    # The leading-edge flaps (le_flap_r, le_flap_l in the solver's surface order). The rig moves them over the full
-    # travel; only the CFD mesh limits them (see latin_hyper.LEADING_EDGE_MAX_ABS_DEG).
+    splitter_surfaces: tuple[int, ...] = (8, 9, 10, 11)  
+    splitter_max_deg: float = 70  
     leading_edge_surfaces: tuple[int, ...] = (2, 3)
     # No pressure taps on the fuselage: |y| below this. The fuselage is part of the main-body mesh, so the tap
-    # selection excludes it by span. Placeholder from the STL: the body thins from ~73 mm deep at y = 0 to ~30 mm
-    # by |y| = 40 mm.
-    fuselage_half_width_m: float = 0.04
+    # selection excludes it by span. The fuselage is 100 mm wide, treated as constant width along its length.
+    fuselage_half_width_m: float = 0.05
     # Calibration: Cm = My / (q S c).
     q_inf: float = 500.0  # dynamic pressure [Pa], ~29 m/s
     area: float = 0.12  # reference area [m^2]

@@ -320,16 +320,33 @@ def lev_stations(problem: TapProblem) -> list[tuple[float, float]]:
     )
     alphas = sorted(problem.runs["alpha_deg"].gather(rows).to_list())
     print(f"LEV taps from {len(rows)} clean runs at alpha {', '.join(f'{a:.1f}' for a in alphas)} deg")
-    stations = []
-    for x in torch.linspace(*LEV_X_RANGE_M, N_LEV_TAPS_PER_SIDE).tolist():
-        peaks = []
+
+    def peaks_at(x: float) -> list[dict[str, float]] | None:
+        """The highest-spread point within LEV_ETA_RANGE at station x on each side, or None if a side has none."""
+        found = []
         for sign in (1, -1):
             side = upper.filter((pl.col("x") - x).abs() < CANDIDATE_SPACING_M, pl.col("y") * sign > 0)
             side = side.with_columns(eta=pl.col("y").abs() / pl.col("y").abs().max())
             peak = side.filter(pl.col("eta").is_between(*LEV_ETA_RANGE)).sort("spread", descending=True)
             if peak.is_empty():
-                raise ValueError(f"no upper-skin candidates at x = {x:.3f} m; check LEV_X_RANGE_M")
-            peaks.append(peak.row(0, named=True))
+                return None
+            found.append(peak.row(0, named=True))
+        return found
+
+    # Near the apex the wing can be entirely inside a no-tap zone (the fuselage): start at the first station with
+    # candidates on both sides.
+    x_start, x_end = LEV_X_RANGE_M
+    while peaks_at(x_start) is None:
+        x_start += CANDIDATE_SPACING_M
+        if x_start >= x_end:
+            raise ValueError(f"no upper-skin candidates within LEV_ETA_RANGE anywhere in LEV_X_RANGE_M {LEV_X_RANGE_M}")
+    if x_start > LEV_X_RANGE_M[0]:
+        print(f"LEV stations start at x = {x_start:.3f} m: no candidates further forward (no-tap zones)")
+    stations = []
+    for x in torch.linspace(x_start, x_end, N_LEV_TAPS_PER_SIDE).tolist():
+        peaks = peaks_at(x)
+        if peaks is None:
+            raise ValueError(f"no upper-skin candidates at x = {x:.3f} m; check LEV_X_RANGE_M")
         y = sum(abs(p["y"]) for p in peaks) / 2
         print(f"  x = {x:.3f} m: y = +-{y:.3f} m (eta {peaks[0]['eta']:.2f} / {peaks[1]['eta']:.2f}, "
               f"Cp std {peaks[0]['spread']:.2f} / {peaks[1]['spread']:.2f})")

@@ -29,6 +29,7 @@ import torch
 from matplotlib.axes import Axes
 from torch import Tensor
 
+from src.config import CONFIG
 from src.data.cfd import CFD_DATA_DIR, RUNS_FILE, surface_file
 from src.ml.taps.tap_selection import (
     N_TAPS,
@@ -105,9 +106,11 @@ def reference_run(runs: pl.DataFrame) -> str:
     return clean["run"][0]
 
 
-def candidate_points(reference: pl.DataFrame, spacing: float = CANDIDATE_SPACING_M) -> pl.DataFrame:
-    """One face per `spacing` square in planform (x, y) on each skin: the one nearest the square's centre."""
-    cells = reference.with_columns((pl.col(c) / spacing).floor().alias(f"cell_{c}") for c in ("x", "y"))
+def candidate_points(reference: pl.DataFrame, spacing: float = CANDIDATE_SPACING_M,
+                     fuselage_half_width: float = CONFIG.rig.fuselage_half_width_m) -> pl.DataFrame:
+    """One face per `spacing` square in planform (x, y) on each skin: the one nearest the square's centre. Nothing
+    on the fuselage (|y| < `fuselage_half_width`): taps cannot be fitted there."""
+    cells = reference.filter(pl.col("y").abs() >= fuselage_half_width).with_columns((pl.col(c) / spacing).floor().alias(f"cell_{c}") for c in ("x", "y"))
     off_centre = sum(((pl.col(c) / spacing) - pl.col(f"cell_{c}") - 0.5) ** 2 for c in ("x", "y"))
     return (
         cells.sort(off_centre)

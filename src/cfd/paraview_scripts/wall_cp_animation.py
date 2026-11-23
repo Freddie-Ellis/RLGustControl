@@ -134,6 +134,8 @@ view.OrientationAxesVisibility = 1
 lut = GetColorTransferFunction("Cp")
 lut.AutomaticRescaleRangeMode = "Never"
 lut.RescaleTransferFunction(*CP_RANGE)
+lut.ColorSpace = "Lab"   # blue - white - red, white at Cp = 0 (keep in step with slices.py DIVERGING)
+lut.RGBPoints = [CP_RANGE[0], 0.23, 0.30, 0.75, 0.0, 1.0, 1.0, 1.0, CP_RANGE[1], 0.71, 0.02, 0.15]
 GetOpacityTransferFunction("Cp").RescaleTransferFunction(*CP_RANGE)
 bar = GetScalarBar(lut, view)
 bar.Title = "Cp"

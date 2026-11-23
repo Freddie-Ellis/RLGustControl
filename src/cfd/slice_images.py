@@ -14,14 +14,26 @@ from pathlib import Path
 SLICE_IMAGES_DIR: Path = Path(__file__).resolve().parent.parent / "data" / "cfd"  # slices.py's <outdir>, copied off the HPC
 AXES: tuple[str, ...] = ("x", "y")
 
+_CASE = re.compile(r"^(?P<batch>.+?)_+a(?P<alpha>[+-]\d+(?:\.\d+)?)_b(?P<beta>[+-]\d+(?:\.\d+)?)$")
 _SWEEP = re.compile(r"^(?P<field>.+)_sweep_(?P<axis>[a-z])_(?P<index>\d+)\.png$")
 
 
 def list_cases(images_dir: Path = SLICE_IMAGES_DIR) -> list[str]:
-    """Case folders under `images_dir` that hold at least one sweep image, sorted by name."""
+    """Case folders under `images_dir` that hold at least one sweep image, in `case_order`."""
     if not images_dir.is_dir():
         return []
-    return sorted(d.name for d in images_dir.iterdir() if d.is_dir() and any(_sweep_images(d)))
+    return sorted((d.name for d in images_dir.iterdir() if d.is_dir() and any(_sweep_images(d))), key=case_order)
+
+
+def case_order(name: str) -> tuple[bool, str, bool, float, float]:
+    """Batch by batch (one set of deflections each); within a batch, the whole alpha sweep at zero sideslip, then the
+    sideslip conditions by alpha, then beta. As wall_cp_animation.py's animation_order. Names that are not
+    <batch>_a<alpha>_b<beta> go last, by name."""
+    m = _CASE.match(name)
+    if m is None:
+        return (True, name, False, 0.0, 0.0)
+    alpha, beta = float(m["alpha"]), float(m["beta"])
+    return (False, m["batch"], beta != 0.0, alpha, beta)
 
 
 def list_fields(case_dir: Path) -> list[str]:

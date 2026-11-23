@@ -18,10 +18,16 @@ Examples
   slices.py C:\dev\test_cfd\batch1_000\solve\a+25.0_b+00.0 out --axis x
   slices.py C:\dev\test_cfd\batch1_000\solve\a+25.0_b+00.0 out --axis y --camera side
   slices.py C:\dev\test_cfd out --slice-field Cp --wall yPlus
+  slices.py C:\dev\test_cfd out --slice-field Uz --axis x     (crossflow on the x slices: the vortex swirl)
 
-Colour ranges: Cp uses CP_RANGE (the same as the wall scripts), |U| 0 to 1.5 U_inf, yPlus and Cf fixed defaults. For
-k, nut and p, which have no natural range, the range is taken over the slices of EVERY case found, so it is still
-one range for the whole set. --slice-range / --wall-range override any of these.
+Colour ranges: Cp uses CP_RANGE (the same as the wall scripts), |U| 0 to 1.5 U_inf, Ux, Uy and Uz +-0.5 U_inf,
+yPlus and Cf fixed defaults. For k, nut and p, which have no natural range, the range is taken over the
+slices of EVERY case found, so it is still one range for the whole set. --slice-range / --wall-range override any of
+these. Cp, Ux, Uy and Uz are blue (negative) - white (0) - red (positive), so white is always exactly 0.
+
+Ux, Uy and Uz are the disturbance the wing makes, U - U_inf, in the model frame, so undisturbed flow is white: on Ux,
+blue is a velocity deficit (wake, vortex core); on an x slice, Uy and Uz show a vortex as a blue/red pair either side
+of its core.
 
 Stitch a sweep into a video:  ffmpeg -framerate 4 -i U_sweep_x_%03d.png -pix_fmt yuv420p U_sweep_x.mp4
 
@@ -45,7 +51,16 @@ from paraview.simple import *
 U_INF = 20.0                 # m/s, used only when a case has no solve_case.json
 CP_RANGE = (-4.0, 1.0)       # keep in step with wall_cps.py and wall_cp_animation.py
 DEFAULT_WALL_RANGE = {"Cp": CP_RANGE, "yPlus": (0.0, 100.0), "Cf": (0.0, 0.01)}
-DEFAULT_SLICE_RANGE = {"U": (0.0, 1.5 * U_INF), "Cp": CP_RANGE}
+DEFAULT_SLICE_RANGE = {
+    "U": (0.0, 1.5 * U_INF), "Cp": CP_RANGE,
+    "Ux": (-0.5 * U_INF, 0.5 * U_INF), "Uy": (-0.5 * U_INF, 0.5 * U_INF), "Uz": (-0.5 * U_INF, 0.5 * U_INF),
+}
+U_COMPONENTS = {"Ux": "X", "Uy": "Y", "Uz": "Z"}   # disturbance U - U_inf, model frame: x aft, y starboard, z up
+SIGNED_FIELDS = ("Cp", "Ux", "Uy", "Uz")   # drawn blue - white - red with white at exactly 0
+DIVERGING = ((0.23, 0.30, 0.75), (1.0, 1.0, 1.0), (0.71, 0.02, 0.15))   # keep in step with the wall scripts
+FIELD_TITLES = {"U": "|U| (m/s)", "Ux": "Ux - U_inf,x (m/s)", "Uy": "Uy - U_inf,y (m/s)", "Uz": "Uz - U_inf,z (m/s)"}
+SLICE_LIGHTING = (1.0, 0.0)   # (ambient, diffuse): slices are flat, so unlit, showing their true colours
+WALL_LIGHTING = (0.6, 0.4)    # mostly unlit so white reads as white, with a little shading to show the shape
 TEXT_COLOUR = [0, 0, 0]      # labels and colour bars, on the white background
 # ------------------------------------------------------------------------------
 
@@ -53,7 +68,8 @@ ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDe
 ap.add_argument("path", help="case folder, or a folder containing cases")
 ap.add_argument("outdir", help="where PNGs are written (one subfolder per case)")
 ap.add_argument("--axis", choices=["x", "y", "all"], default="all", help="which slices to use")
-ap.add_argument("--slice-field", default="U", help="U (magnitude), Cp, k, nut or p")
+ap.add_argument("--slice-field", default="U",
+                help="U (magnitude), Ux, Uy, Uz (U - U_inf components, model frame), Cp, k, nut or p")
 ap.add_argument("--slice-range", nargs=2, type=float, help="colour range for the slices")
 ap.add_argument("--wall", choices=["Cp", "yPlus", "Cf"], default="Cp", help="wall surface colouring")
 ap.add_argument("--wall-range", nargs=2, type=float, help="colour range for the walls")
@@ -116,15 +132,19 @@ def list_slices(case, axis):
     return sorted(out)        # by axis, then position
 
 
-def dynamic_pressure(case):
-    """Kinematic 0.5 U_inf^2 from the case's own freestream speed (U_INF if it has no solve_case.json)."""
+def freestream(case):
+    """The case's freestream velocity vector in the model frame (U_INF along +x if it has no solve_case.json)."""
     path = os.path.join(case, "solve_case.json")
     if os.path.exists(path):
         with open(path) as f:
-            u = json.load(f)["freestream_velocity_m_s"]
-        return 0.5 * sum(c * c for c in u)
-    print("  %s: no solve_case.json, assuming U_inf = %g m/s" % (os.path.basename(case), U_INF))
-    return 0.5 * U_INF ** 2
+            return json.load(f)["freestream_velocity_m_s"]
+    print("  %s: no solve_case.json, assuming U_inf = %g m/s along x" % (os.path.basename(case), U_INF))
+    return [U_INF, 0.0, 0.0]
+
+
+def dynamic_pressure(u_inf):
+    """Kinematic 0.5 U_inf^2."""
+    return 0.5 * sum(c * c for c in u_inf)
 
 
 # ---------------------------------------------------------------------------
@@ -139,11 +159,16 @@ def try_set(obj, attr, value):
 
 
 def fixed_lut(name, rng):
-    """The colour map for `name`, pinned to `rng`: ParaView never rescales it to a case's data."""
+    """The colour map for `name`, pinned to `rng`: ParaView never rescales it to a case's data. Signed fields
+    (SIGNED_FIELDS) go blue - white - red with white at 0, wherever 0 falls in the range."""
     lut = GetColorTransferFunction(name)
     lut.AutomaticRescaleRangeMode = "Never"
     lut.RescaleTransferFunction(rng[0], rng[1])
     GetOpacityTransferFunction(name).RescaleTransferFunction(rng[0], rng[1])
+    if name in SIGNED_FIELDS and rng[0] < 0 < rng[1]:
+        lo, mid, hi = DIVERGING
+        lut.ColorSpace = "Lab"
+        lut.RGBPoints = [rng[0], *lo, 0.0, *mid, rng[1], *hi]
     return lut
 
 
@@ -156,15 +181,22 @@ def style_bar(lut, title, corner):
     try_set(bar, "WindowLocation", corner)
 
 
-def slice_source(reader, field, q):
-    """(source, array, component) to colour a slice by; Cp gets a Calculator, which is returned for cleanup too."""
+def slice_source(reader, field, q, u_inf):
+    """(source, array, component) to colour a slice by. Cp and the velocity components get a Calculator, which is
+    returned for cleanup too. The components are the disturbance U - U_inf: the freestream itself (e.g. 8.5 m/s of Uz
+    at 25 deg alpha in the model frame) would otherwise swamp the flow around the wing."""
     if field == "Cp":
-        c = Calculator(Input=reader)
-        c.AttributeType, c.ResultArrayName, c.Function = "Cell Data", "Cp", "p/%g" % q
-        return c, "Cp", None
-    if field == "U":
+        function = "p/%g" % q
+    elif field in U_COMPONENTS:
+        axis = U_COMPONENTS[field]
+        function = "U_%s-(%g)" % (axis, u_inf["XYZ".index(axis)])
+    elif field == "U":
         return reader, "U", "Magnitude"
-    return reader, field, None
+    else:
+        return reader, field, None
+    c = Calculator(Input=reader)
+    c.AttributeType, c.ResultArrayName, c.Function = "Cell Data", field, function
+    return c, field, None
 
 
 def data_range(src, array):
@@ -272,7 +304,8 @@ for case in cases:
         # Resume after an interrupted run. The first case is always rendered, as it frames the camera.
         print("%s: already rendered, skipping" % tag)
         continue
-    q = dynamic_pressure(case)
+    u_inf = freestream(case)
+    q = dynamic_pressure(u_inf)
     created = []          # for cleanup, creation order
 
     # ---- walls ---------------------------------------------------------
@@ -289,6 +322,8 @@ for case in cases:
         created.append(calc)
         wsrc = calc
     wdisp = Show(wsrc, view)
+    try_set(wdisp, "Ambient", WALL_LIGHTING[0])
+    try_set(wdisp, "Diffuse", WALL_LIGHTING[1])
     ColorBy(wdisp, ("CELLS", wall_array))
     wdisp.LookupTable = wlut
     wlut.RescaleTransferFunction(*wall_range)   # re-pin in case anything rescaled it
@@ -304,10 +339,12 @@ for case in cases:
     for ax, val, f in slices:
         r = XMLPolyDataReader(FileName=[f])
         created.append(r)
-        src, arr, comp = slice_source(r, sf, q)
+        src, arr, comp = slice_source(r, sf, q, u_inf)
         if src is not r:
             created.append(src)
         d = Show(src, view)
+        try_set(d, "Ambient", SLICE_LIGHTING[0])
+        try_set(d, "Diffuse", SLICE_LIGHTING[1])
         ColorBy(d, ("CELLS", arr, comp) if comp else ("CELLS", arr))
         d.LookupTable = slut
         d.Visibility = 0
@@ -316,7 +353,7 @@ for case in cases:
     slut.RescaleTransferFunction(*slice_range)
     if slice_disps and sf != wall_array:   # the same field shares the walls' bar
         slice_disps[0].SetScalarBarVisibility(view, True)
-        style_bar(slut, "|U| (m/s)" if sf == "U" else sf, "Lower Right Corner")
+        style_bar(slut, FIELD_TITLES.get(sf, sf), "Lower Right Corner")
 
     # ---- label ---------------------------------------------------------
     label = Text(Text=tag)

@@ -9,8 +9,9 @@ Turns runs.parquet and the per-run surface tables into the inputs of `select_tap
 - known: the control-surface deflections, which the controller sets itself (only those that vary across runs).
 
 The layout is built in three groups, in this order:
-- LEV: N_LEV_TAPS_PER_SIDE mirrored pairs along the leading-edge vortex footprints. Steady CFD fixes the vortices by
-  alpha and beta, so a greedy choice never asks for them, but in a gust they lag and break down on their own;
+- LEV: N_LEV_STATIONS chordwise rows along the leading-edge vortex footprints, each an inboard/outboard pair per side
+  bracketing where the vortex sits, so its spanwise movement shows. Steady CFD fixes the vortices by alpha and beta,
+  so a greedy choice never asks for them, but in a gust they lag and break down on their own;
 - greedy: N_GREEDY_TAPS chosen for the targets, given the LEV taps;
 - uniform: the rest of N_TAPS spread evenly over both skins, for reconstructing the whole Cp field.
 Every group is placed in mirror pairs (y -> -y), so the layout is symmetric like the wing. Only the candidate points
@@ -57,7 +58,9 @@ USE_UNCONVERGED: bool = True  # also use runs whose loads never settled: their C
 # but their loads are averaged, so Cp and target need not match for them
 
 # Layout: LEV taps first, then greedy taps for the targets given those, then an even fill up to N_TAPS.
-N_LEV_TAPS_PER_SIDE: int = 6  # along each leading-edge vortex's footprint, mirrored port/starboard
+N_LEV_STATIONS: int = 5  # chordwise rows along each leading-edge vortex's footprint; each row is an inboard/outboard
+# pair per side, mirrored port/starboard: 4 taps per row, 20 in all
+
 N_GREEDY_TAPS: int = 16  # about where the cross-validated error of a purely greedy layout stops falling; chosen
 # in mirror pairs (see with_mirrors), so even
 LEV_ALPHA_RANGE_DEG: tuple[float, float] = (5.0, 15.0)  # the vortex moves over this range and breaks down near 20 deg;
@@ -67,7 +70,7 @@ LEV_X_RANGE_M: tuple[float, float] = (0.05, 0.30)  # chordwise span of the LEV s
 LEV_ETA_RANGE: tuple[float, float] = (0.5, 0.98)  # where to look, as a fraction of the local semi-span: on this mesh
 # the suction hugs the leading edge
 LEV_TAPS_M: tuple[tuple[float, float], ...] | None = None  # (x, y) of starboard LEV taps placed by hand, y > 0,
-# mirrored to port; None places them where the LEV_ALPHA_RANGE_DEG runs' Cp varies most
+# mirrored to port; None brackets where the LEV_ALPHA_RANGE_DEG runs' suction peak moves (see lev_stations)
 GROUP_COLOURS: dict[str, str] = {"LEV": "orange", "greedy": "red", "uniform": "white"}
 
 OUTPUT_DIR: Path = Path(__file__).parent / "selections"
@@ -308,61 +311,65 @@ def lev_runs(runs: pl.DataFrame) -> list[int]:
 
 
 def lev_stations(problem: TapProblem) -> list[tuple[float, float]]:
-    """(x, y > 0) of each LEV tap pair: at each of N_LEV_TAPS_PER_SIDE stations along LEV_X_RANGE_M, the upper-skin
-    point within LEV_ETA_RANGE of the local semi-span whose Cp varies most over the `lev_runs`, i.e. where the passing
-    vortex changes the pressure most. Averaged over the two sides so the pair is symmetric."""
+    """(x, y > 0) of the starboard LEV taps: at each of N_LEV_STATIONS stations along LEV_X_RANGE_M, a spanwise pair
+    bracketing where the vortex's suction peak sits over the `lev_runs`.
+
+    At each station and in each run, the suction peak is the lowest-Cp upper-skin point within LEV_ETA_RANGE of the
+    local semi-span. As alpha rises the peak moves (inboard, on a delta wing); the inboard tap goes at its most
+    inboard position and the outboard tap at its most outboard, at least TAP_MIN_SPACING_M apart. Between the two,
+    which tap reads the stronger suction says where the vortex is. Averaged over the two sides so the layout is
+    symmetric."""
     rows = lev_runs(problem.runs)
-    spread = problem.cp[rows].std(dim=0)
-    upper = (
-        problem.candidates.with_row_index("index")
-        .with_columns(spread=pl.Series(spread.numpy()))
-        .filter(pl.col("surface") == UPPER)
-    )
+    cp = problem.cp[rows]
+    upper = problem.candidates.with_row_index("index").filter(pl.col("surface") == UPPER)
     alphas = sorted(problem.runs["alpha_deg"].gather(rows).to_list())
     print(f"LEV taps from {len(rows)} clean runs at alpha {', '.join(f'{a:.1f}' for a in alphas)} deg")
 
-    def peaks_at(x: float) -> list[dict[str, float]] | None:
-        """The highest-spread point within LEV_ETA_RANGE at station x on each side, or None if a side has none."""
-        found = []
+    def peak_track(x: float) -> tuple[float, float] | None:
+        """(most inboard, most outboard) |y| of the suction peak over the runs at station x, averaged over the two
+        sides, or None if a side has no candidates there."""
+        extremes = []
         for sign in (1, -1):
             side = upper.filter((pl.col("x") - x).abs() < CANDIDATE_SPACING_M, pl.col("y") * sign > 0)
-            side = side.with_columns(eta=pl.col("y").abs() / pl.col("y").abs().max())
-            peak = side.filter(pl.col("eta").is_between(*LEV_ETA_RANGE)).sort("spread", descending=True)
-            if peak.is_empty():
+            band = side.filter((pl.col("y").abs() / pl.col("y").abs().max()).is_between(*LEV_ETA_RANGE))
+            if band.is_empty():
                 return None
-            found.append(peak.row(0, named=True))
-        return found
+            peaks = band["y"].abs().to_numpy()[cp[:, band["index"].to_list()].argmin(dim=1).numpy()]
+            extremes.append((float(peaks.min()), float(peaks.max())))
+        return sum(e[0] for e in extremes) / 2, sum(e[1] for e in extremes) / 2
 
     # Near the apex the wing can be entirely inside a no-tap zone (the fuselage): start at the first station with
     # candidates on both sides.
     x_start, x_end = LEV_X_RANGE_M
-    while peaks_at(x_start) is None:
+    while peak_track(x_start) is None:
         x_start += CANDIDATE_SPACING_M
         if x_start >= x_end:
             raise ValueError(f"no upper-skin candidates within LEV_ETA_RANGE anywhere in LEV_X_RANGE_M {LEV_X_RANGE_M}")
     if x_start > LEV_X_RANGE_M[0]:
         print(f"LEV stations start at x = {x_start:.3f} m: no candidates further forward (no-tap zones)")
-    stations = []
-    for x in torch.linspace(x_start, x_end, N_LEV_TAPS_PER_SIDE).tolist():
-        peaks = peaks_at(x)
-        if peaks is None:
+    taps = []
+    for x in torch.linspace(x_start, x_end, N_LEV_STATIONS).tolist():
+        track = peak_track(x)
+        if track is None:
             raise ValueError(f"no upper-skin candidates at x = {x:.3f} m; check LEV_X_RANGE_M")
-        y = sum(abs(p["y"]) for p in peaks) / 2
-        print(f"  x = {x:.3f} m: y = +-{y:.3f} m (eta {peaks[0]['eta']:.2f} / {peaks[1]['eta']:.2f}, "
-              f"Cp std {peaks[0]['spread']:.2f} / {peaks[1]['spread']:.2f})")
-        stations.append((x, y))
-    return stations
+        inboard, outboard = track
+        centre, half = (inboard + outboard) / 2, max((outboard - inboard) / 2, TAP_MIN_SPACING_M / 2)
+        print(f"  x = {x:.3f} m: suction peak sweeps |y| {inboard:.3f}-{outboard:.3f} m -> taps at "
+              f"y = +-{centre - half:.3f} and +-{centre + half:.3f} m")
+        taps += [(x, centre - half), (x, centre + half)]
+    return taps
 
 
 def lev_taps(problem: TapProblem) -> Tensor:
-    """Candidate indices of the LEV taps, starboard then port at each station: LEV_TAPS_M if given, else found on the
-    suction ridge (`lev_stations`). The starboard tap is snapped to the nearest upper-skin candidate in planform and
-    the port tap is its mirror image."""
-    stations = list(LEV_TAPS_M) if LEV_TAPS_M is not None else lev_stations(problem)
+    """Candidate indices of the LEV taps, starboard then port for each: LEV_TAPS_M if given, else bracketing the
+    vortex's suction peak (`lev_stations`). Each starboard tap is snapped to the nearest unused upper-skin candidate in
+    planform and the port tap is its mirror image."""
+    points = list(LEV_TAPS_M) if LEV_TAPS_M is not None else lev_stations(problem)
     upper = problem.candidates.with_row_index("index").filter(pl.col("surface") == UPPER, pl.col("y") > 0)
-    taps = []
-    for x, y in stations:
-        starboard = upper.sort((pl.col("x") - x) ** 2 + (pl.col("y") - y) ** 2).row(0, named=True)
+    taps: list[int] = []
+    for x, y in points:
+        free = upper.filter(~pl.col("index").is_in(taps))  # a close pair must not snap onto one candidate
+        starboard = free.sort((pl.col("x") - x) ** 2 + (pl.col("y") - y) ** 2).row(0, named=True)
         taps += [starboard["index"], starboard["mirror"]]
     return torch.tensor(taps, dtype=torch.long)
 

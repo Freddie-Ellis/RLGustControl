@@ -7,9 +7,9 @@ thin_cases.py writes, per solved condition:
     <dir>/<batch>_<condition>/x_136mm.vtp, y_m118mm.vtp  cell data p, U
     <dir>/<batch>_<condition>/case.json                  freestream_velocity_m_s
 
-Cases can also sit one folder down, one folder per set (e.g. <dir>/actuator_effects/...). A set whose cases move one
-actuator at a time can be viewed as actuator sweeps (`actuator_sweeps`); the deflections come from the case files in
-configs/cases, matched by name.
+Cases can also sit one folder down, one folder per set (e.g. <dir>/actuator_effects/...). A set with a
+setpoints.parquet (the cases' deflections, one row per <case>_<condition> folder) moves one actuator at a time and is
+viewed as actuator sweeps (`actuator_sweeps`).
 
 Everything is in the model frame (x aft, y starboard, z up): the wing stays still and the freestream turns.
 
@@ -20,20 +20,19 @@ fields are blue - white - red with white at exactly 0; |U| uses ParaView's defau
 
 import json
 import re
-import tomllib
 from dataclasses import dataclass
-from functools import cache
 from pathlib import Path
 
 import numpy as np
+import polars as pl
 import pyvista as pv
+from matplotlib.colors import ListedColormap
 from numpy.typing import NDArray
+from pyvista.plotting._typing import ScalarBarArgs
 from vtkmodules.vtkRenderingCore import vtkColorTransferFunction
 
-from src.config import CONFIG
-
 CFD_VIEW_DIR: Path = Path(__file__).resolve().parent.parent / "data" / "cfd_view"  # thin_cases.py's <outdir>, copied
-CASE_FILES_DIR: Path = CONFIG.configs_dir / "cases"  # the case files the cases were solved from (batch_cases.py)
+SETPOINTS: str = "setpoints.parquet"  # a set's per-case deflections, which make it viewable as actuator sweeps
 AXES: tuple[str, ...] = ("x", "y")
 U_INF: float = 20.0  # m/s: sets the velocity colour ranges, and the freestream of a case with no case.json
 CP_RANGE: tuple[float, float] = (-4.0, 1.0)  # as slices.py and wall_cp_animation.py
@@ -60,6 +59,12 @@ FIELDS: dict[str, FieldStyle] = {
     "Uz": FieldStyle("Uz - U_inf,z (m/s)", (-0.5 * U_INF, 0.5 * U_INF), True),
 }
 WALL_FIELD: str = "Cp"
+
+# How a case is drawn, in the CFD tab and the GIFs alike
+VIEW_DIRECTION: tuple[float, float, float] = (-0.8, -1.0, 0.6)  # slices.py's "iso" camera
+SLICE_LIGHTING: tuple[float, float] = (1.0, 0.0)  # (ambient, diffuse) as slices.py: flat slices in true colours
+WALL_LIGHTING: tuple[float, float] = (0.6, 0.4)  # mostly unlit so white reads as white, a little shading for shape
+BAR_LABELS: dict[str, int] = {"Cp": 6, "U": 7, "Ux": 5, "Uy": 5, "Uz": 5}  # labels at round steps of each range
 
 _CASE = re.compile(r"^(?P<batch>.+?)_+a(?P<alpha>[+-]\d+(?:\.\d+)?)_b(?P<beta>[+-]\d+(?:\.\d+)?)$")
 _SLICE = re.compile(r"^(?P<axis>[xyz])_(?P<sign>[mp])?(?P<mm>\d+)mm\.vtp$")
@@ -105,54 +110,25 @@ class SweepPoint:
 type Sweeps = dict[str, dict[tuple[float, float], list[SweepPoint]]]  # actuator -> (alpha, beta) -> by deflection
 
 
-@cache
-def _case_files() -> dict[str, Path]:
-    """Every case file under CASE_FILES_DIR, by name (e.g. batch2_137)."""
-    return {path.stem: path for path in CASE_FILES_DIR.rglob("*.toml")}
-
-
-def case_deflections(name: str) -> dict[str, float] | None:
-    """The case's deflections (surface -> deg, any not listed are 0), from the case file it was solved from:
-    configs/cases/.../<case file>.toml, the case file being the start of the case's name (batch2_137 in
-    batch2_137_a+09.0_b+00.0). None if that case file is not in the repo."""
-    m = _CASE.match(name)
-    path = _case_files().get(m["batch"]) if m else None
-    if path is None:
-        return None
-    return {surface: float(deg) for surface, deg in tomllib.loads(path.read_text()).get("deflections_deg", {}).items()}
-
-
-def actuator_name(surfaces: list[str]) -> str:
-    """A readable name for surfaces moved together: a left/right pair (x_l, x_r) is "x (both)"."""
-    parts = []
-    for surface in sorted(surfaces):
-        base, side = surface.rsplit("_", 1) if surface.endswith(("_l", "_r")) else (surface, "")
-        if side == "r" and f"{base}_l" in surfaces:
-            continue  # named with its _l partner
-        parts.append(f"{base} (both)" if side == "l" and f"{base}_r" in surfaces else surface)
-    return " + ".join(parts)
-
-
 def actuator_sweeps(set_dir: Path) -> Sweeps:
-    """The set's actuator sweeps. An actuator is a group of surfaces moved together by one angle with everything else
-    at 0 (one surface, a left/right pair, a group of splitters); its sweep at each flow condition is its cases there,
-    by deflection. A case with nothing deflected joins every actuator's sweep at its condition as the 0 deg point.
-    Cases moving surfaces by different angles fit no sweep and are left out. Empty if no case is a sweep point."""
+    """The set's actuator sweeps, from its SETPOINTS file (one row per solved case and condition): an actuator is a
+    `family` moved in one `mode` ("wingtip (sym)", "le (right)", ...) by `delta_deg`; its sweep at each flow condition
+    is its cases there, by deflection, with the "clean" family's case there as the 0 deg point. Rows with no
+    delta_deg (the "combined" case) fit no sweep. Empty if the set has no SETPOINTS file."""
+    path = set_dir / SETPOINTS
+    if not path.is_file():
+        return {}
+    available = set(list_cases(set_dir))
+    rows = (pl.read_parquet(path, columns=["case", "condition", "family", "mode", "delta_deg", "alpha_deg", "beta_deg"])
+            .with_columns(name=pl.col("case") + "_" + pl.col("condition"))
+            .filter(pl.col("name").is_in(available)))
+    clean = {(row["alpha_deg"], row["beta_deg"]): row["name"]
+             for row in rows.filter(pl.col("family") == "clean").iter_rows(named=True)}
     moved_alone: dict[str, dict[tuple[float, float], list[SweepPoint]]] = {}
-    clean: dict[tuple[float, float], str] = {}
-    for name in list_cases(set_dir):
-        m = _CASE.match(name)
-        deflections = case_deflections(name) if m else None
-        if m is None or deflections is None:
-            continue
-        condition = (float(m["alpha"]), float(m["beta"]))
-        moved = {surface: deg for surface, deg in deflections.items() if deg != 0.0}
-        if not moved:
-            clean[condition] = name
-        elif len(set(moved.values())) == 1:
-            actuator = actuator_name(list(moved))
-            deg = next(iter(moved.values()))
-            moved_alone.setdefault(actuator, {}).setdefault(condition, []).append(SweepPoint(deg, name))
+    for row in rows.filter(pl.col("delta_deg").is_not_null()).iter_rows(named=True):
+        actuator = f"{row['family']} ({row['mode']})"
+        condition = (row["alpha_deg"], row["beta_deg"])
+        moved_alone.setdefault(actuator, {}).setdefault(condition, []).append(SweepPoint(row["delta_deg"], row["name"]))
     sweeps: Sweeps = {}
     for actuator in sorted(moved_alone):
         sweeps[actuator] = {}
@@ -160,6 +136,12 @@ def actuator_sweeps(set_dir: Path) -> Sweeps:
             zero = [SweepPoint(0.0, clean[condition])] if condition in clean else []
             sweeps[actuator][condition] = sorted(moved_alone[actuator][condition] + zero, key=lambda p: p.deflection_deg)
     return sweeps
+
+
+def case_condition(name: str) -> tuple[str, float, float] | None:
+    """(batch, alpha, beta) of a <batch>_a<alpha>_b<beta> case name, or None if it is not one."""
+    m = _CASE.match(name)
+    return (m["batch"], float(m["alpha"]), float(m["beta"])) if m else None
 
 
 def case_order(name: str) -> tuple[bool, str, bool, float, float]:
@@ -173,11 +155,12 @@ def case_order(name: str) -> tuple[bool, str, bool, float, float]:
     return (False, m["batch"], beta != 0.0, alpha, beta)
 
 
-def load_case(case_dir: Path) -> CfdCase:
+def load_case(case_dir: Path, with_slices: bool = True) -> CfdCase:
+    """The case in `case_dir`; without its slices (none listed) if not `with_slices`, which is much quicker."""
     info = json.loads((case_dir / "case.json").read_text())
     freestream = np.asarray(info.get("freestream_velocity_m_s", [U_INF, 0.0, 0.0]), dtype=np.float64)
     slices: dict[str, list[Slice]] = {axis: [] for axis in AXES}
-    for path in case_dir.glob("*.vtp"):
+    for path in case_dir.glob("*.vtp") if with_slices else []:
         m = _SLICE.match(path.name)
         if m is None or m["axis"] not in slices:
             continue
@@ -197,6 +180,39 @@ def field_values(case: CfdCase, mesh: pv.PolyData, field: str) -> NDArray[np.flo
         return np.linalg.norm(velocity, axis=1).astype(np.float32)
     component = "xyz".index(field[1])
     return (velocity[:, component] - case.freestream[component]).astype(np.float32)
+
+
+def bar_args(field: str, title: str, position_y: float) -> ScalarBarArgs:
+    """A vertical colour bar on the right, black text on the white background (as the rendered images)."""
+    return {"title": title, "n_labels": BAR_LABELS.get(field, 5), "position_x": 0.9, "position_y": position_y,
+            "vertical": True, "color": "black", "fmt": "%.3g", "width": 0.05, "height": 0.35,
+            "title_font_size": 14, "label_font_size": 12}
+
+
+def add_field(plotter: pv.BasePlotter, case: CfdCase, mesh: pv.PolyData, field: str, lighting: tuple[float, float],
+              bar: ScalarBarArgs | None) -> pv.Actor:
+    """Draw `mesh` coloured cell by cell by `field` in its fixed colour map and range, with (ambient, diffuse)
+    `lighting`, and a colour bar if `bar` is given. Leaves the camera alone."""
+    ambient, diffuse = lighting
+    return plotter.add_mesh(
+        mesh, scalars=field_values(case, mesh, field), preference="cell",
+        cmap=ListedColormap(colour_table(field)), clim=FIELDS[field].range,
+        ambient=ambient, diffuse=diffuse, specular=0.0, reset_camera=False,
+        show_scalar_bar=bar is not None, scalar_bar_args=bar,
+    )
+
+
+def iso_camera(meshes: list[pv.PolyData], zoom: float = 1.0,
+               direction: tuple[float, float, float] = VIEW_DIRECTION) -> list[tuple[float, float, float]]:
+    """A camera position framing `meshes`, looking from `direction` (camera side of the centre), z up; `zoom` > 1
+    moves in."""
+    bounds = np.array([m.bounds for m in meshes])
+    lo, hi = bounds[:, 0::2].min(axis=0), bounds[:, 1::2].max(axis=0)
+    centre = (lo + hi) / 2
+    unit = np.array(direction) / np.linalg.norm(direction)
+    distance = 1.5 * float(np.linalg.norm(hi - lo)) / zoom
+    up = (-1.0, 0.0, 0.0) if abs(unit[2]) > 0.99 else (0.0, 0.0, 1.0)  # looking straight down: nose to the top
+    return [tuple(centre + distance * unit), tuple(centre), up]
 
 
 def colour_table(field: str, n: int = 256) -> NDArray[np.float64]:

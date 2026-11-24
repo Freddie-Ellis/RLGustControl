@@ -34,7 +34,7 @@ ROOT: Path = Path(__file__).resolve().parent.parent
 CFD_SOURCE_DIR: Path = Path(r"C:\dev\mesh_coarse")  # a batch, or a folder of batches
 CFD_DATA_DIR: Path = ROOT / "data" / "cfd"
 
-RUNS_FILE: str = "test.parquet"
+RUNS_FILE: str = "runs.parquet"
 SURFACE_DIR: str = "surface"
 MESH_DIR: Path = Path("mesh") / "constant" / "polyMesh"  # inside a batch
 

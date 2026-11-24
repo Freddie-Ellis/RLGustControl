@@ -14,10 +14,7 @@ actuator and a flow condition, then drag the deflection slider to watch that sur
 from collections import OrderedDict
 from pathlib import Path
 
-import numpy as np
 import pyvista as pv
-from matplotlib.colors import ListedColormap
-from pyvista.plotting._typing import ScalarBarArgs
 from pyvistaqt import QtInteractor
 from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
@@ -39,19 +36,6 @@ from src.cfd import slice_data
 from src.cfd.slice_data import CfdCase
 
 CACHED_CASES: int = 16  # loaded cases kept in memory (~20-40 MB each), so stepping back and forth is instant
-VIEW_DIRECTION: tuple[float, float, float] = (-0.8, -1.0, 0.6)  # slices.py's "iso" camera
-SLICE_LIGHTING: tuple[float, float] = (1.0, 0.0)  # (ambient, diffuse) as slices.py: flat slices in true colours
-WALL_LIGHTING: tuple[float, float] = (0.6, 0.4)  # mostly unlit so white reads as white, a little shading for shape
-BAR_LABELS: dict[str, int] = {"Cp": 6, "U": 7, "Ux": 5, "Uy": 5, "Uz": 5}  # labels at round steps of each range
-
-
-def bar_args(field: str, title: str, position_y: float) -> ScalarBarArgs:
-    """A vertical colour bar on the right, black text on the white background (as the rendered images)."""
-    return {"title": title, "n_labels": BAR_LABELS.get(field, 5), "position_x": 0.9, "position_y": position_y,
-            "vertical": True, "color": "black", "fmt": "%.3g", "width": 0.05, "height": 0.35,
-            "title_font_size": 14, "label_font_size": 12}
-
-
 def refill(combo: QComboBox, items: list[str]) -> None:
     """Replace `combo`'s items without signalling, keeping the current text if it is still an item."""
     current = combo.currentText()
@@ -304,13 +288,15 @@ class CfdTab(QWidget):
 
         same_bar = field == slice_data.WALL_FIELD  # Cp on walls and slices: one map, one range, one bar
         wall_title = "Cp" if same_bar else "Cp (walls)"
-        self._add(case, case.walls, slice_data.WALL_FIELD, WALL_LIGHTING, bar_args(slice_data.WALL_FIELD, wall_title, 0.6))
-        slice_bar = bar_args(field, slice_data.FIELDS[field].title, 0.1)
+        wall_bar = slice_data.bar_args(slice_data.WALL_FIELD, wall_title, 0.6)
+        slice_data.add_field(self.plotter, case, case.walls, slice_data.WALL_FIELD, slice_data.WALL_LIGHTING, wall_bar)
+        slice_bar = slice_data.bar_args(field, slice_data.FIELDS[field].title, 0.1)
         for axis in slice_data.AXES:
             actors: list[pv.Actor] = []
             for s in case.slices[axis]:
                 first = not actors and axis == slice_data.AXES[0]  # one bar for all the slices
-                actor = self._add(case, s.mesh, field, SLICE_LIGHTING, slice_bar if first and not same_bar else None)
+                actor = slice_data.add_field(self.plotter, case, s.mesh, field, slice_data.SLICE_LIGHTING,
+                                             slice_bar if first and not same_bar else None)
                 actor.SetVisibility(False)
                 actors.append(actor)
             self._slice_actors[axis] = actors
@@ -321,30 +307,13 @@ class CfdTab(QWidget):
             self._reset_camera()
         self._show()
 
-    def _add(self, case: CfdCase, mesh: pv.PolyData, field: str, lighting: tuple[float, float],
-             bar: ScalarBarArgs | None) -> pv.Actor:
-        """`mesh` coloured cell by cell by `field` in its fixed colour map and range, with (ambient, diffuse)
-        `lighting`, and a colour bar if `bar` is given."""
-        ambient, diffuse = lighting
-        return self.plotter.add_mesh(
-            mesh, scalars=slice_data.field_values(case, mesh, field), preference="cell",
-            cmap=ListedColormap(slice_data.colour_table(field)), clim=slice_data.FIELDS[field].range,
-            ambient=ambient, diffuse=diffuse, specular=0.0, reset_camera=False,
-            show_scalar_bar=bar is not None, scalar_bar_args=bar,
-        )
-
     def _reset_camera(self) -> None:
         """Frame the walls and every slice from slices.py's iso direction, as the rendered images were."""
         case = self._case
         if case is None:
             return
         meshes = [case.walls] + [s.mesh for axis in slice_data.AXES for s in case.slices[axis]]
-        bounds = np.array([m.bounds for m in meshes])
-        lo, hi = bounds[:, 0::2].min(axis=0), bounds[:, 1::2].max(axis=0)
-        centre = (lo + hi) / 2
-        direction = np.array(VIEW_DIRECTION) / np.linalg.norm(VIEW_DIRECTION)
-        distance = 1.5 * float(np.linalg.norm(hi - lo))
-        self.plotter.camera_position = [tuple(centre + distance * direction), tuple(centre), (0.0, 0.0, 1.0)]
+        self.plotter.camera_position = slice_data.iso_camera(meshes)
         self._camera_set = True
         self.plotter.render()
 

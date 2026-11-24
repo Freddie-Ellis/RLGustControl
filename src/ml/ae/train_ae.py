@@ -32,7 +32,14 @@ from torch import Tensor, nn
 
 from src.config import CONFIG
 from src.data.cfd import CFD_DATA_DIR
-from src.ml.ae.common import Standardiser, TomlConfig, config_path, new_run_dir, r_squared, split_rows
+from src.ml.ae.common import (
+    Standardiser,
+    TomlConfig,
+    config_path,
+    new_run_dir,
+    r_squared,
+    split_rows,
+)
 from src.ml.ae.sparse_latent import AE_HIDDEN, LATENT_DIM, LOAD_HEADS, TapAutoencoder
 from src.ml.atomic import atomic_write_text
 from src.ml.taps.cfd_taps import OUTPUT_DIR as TAP_SELECTIONS_DIR

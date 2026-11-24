@@ -39,6 +39,13 @@ A case file (`configs/cases/`) names the deflections and flow conditions. `bash 
 queues the mesh and solve jobs, and each solve reports the six aerodynamic coefficients, every control surface's hinge
 moment, wall pressure and convergence. The `src/cfd/postpro/` scripts turn downloaded runs into tables and plots.
 
+<p align="center">
+  <img src="docs/images/le_sym_sweep.gif" width="80%" alt="Both leading-edge flaps sweeping from -30 to +30 deg at
+  9 deg angle of attack, wall Cp with flow speed on a cross-flow plane at x = 344 mm">
+</p>
+<p align="center"><em>Both leading-edge flaps swept from −30° to +30° at α = 9°: wall C<sub>p</sub>, and |U| on the
+cross-flow plane x = 344 mm, seen from upstream (<code>python -m src.cfd.gifs</code>)</em></p>
+
 Current work: the mesh-independence study, a vortex-resolution study at α = 20°, and the actuator authority batch
 (`configs/cases/batch2`).
 

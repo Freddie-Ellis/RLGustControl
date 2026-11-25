@@ -6,14 +6,14 @@ https://claude.ai/artifact/3bQ7BkdCM9T1JuBPNergR3).
                      Its decoder D is kept for fault detection
     LatentRegressor  g: the k deployed taps over a short history -> z_hat, regressed to E(taps). The actor's input
 
-At deployment only the k taps, g and the actor run. The sizes below are the plan's starting guesses, to be fixed by its
-experiments; neither network is trained yet.
+At deployment only the k taps, g and the actor run. TODO: the sizes below are the plan's starting values, to be fixed
+by its experiments.
 """
 
 from torch import Tensor, nn
 
-LATENT_DIM = 6  # size of E's latent; plan's starting guess 3 to 8
-K_TAPS = 10  # taps kept at deployment; plan's starting guess 8 to 12, chosen at the knee of error against k
+LATENT_DIM = 6  # TODO: choose from experiments (plan: 3 to 8). Size of E's latent
+K_TAPS = 10  # TODO: choose at the knee of error against k (plan: 8 to 12). Taps kept at deployment
 HISTORY_FRAMES = 4  # recent frames g sees, because pressure depends on history (hysteresis, unsteady effects)
 LOAD_HEADS = ("C_L", "C_m", "C_l")  # coefficients the autoencoder's auxiliary heads predict from the latent: lift,
 # pitch and roll, the loads the controller is to hold at a target

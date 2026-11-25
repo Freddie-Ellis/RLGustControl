@@ -2,7 +2,7 @@ name = "ae_cfd_test"
 seed = 0
 
 # Network (defaults in src/ml/ae/sparse_latent.py)
-latent_dim = 6          # size of the latent z; the plan's starting guess is 3 to 8
+latent_dim = 6          # TODO: choose from experiments (plan: 3 to 8). Size of the latent z
 hidden = 64             # width of the encoder and decoder layers
 
 # Optimisation

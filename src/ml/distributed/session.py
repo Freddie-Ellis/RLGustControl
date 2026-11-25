@@ -17,6 +17,7 @@ from torch import Tensor
 from src.ml.distributed.files import (
     EpisodeMetaData,
     SyncStatus,
+    TargetRequest,
     config_path,
     frame_extras,
     frame_to_transitions,
@@ -28,9 +29,11 @@ from src.ml.distributed.files import (
     read_config,
     read_episode,
     read_sync_status,
+    read_targets,
     stop_path,
+    write_targets,
 )
-from src.ml.envs.wind_tunnel import WindTunnelParams
+from src.ml.envs.wind_tunnel import LoadTarget, WindTunnelParams, check_targets
 from src.ml.run_config import RunConfig
 from src.ml.runs import RunDir, RunStatus, env_dims
 
@@ -63,7 +66,7 @@ class EpisodeDetail:
     meta: EpisodeMetaData
     t: Tensor  # [T] seconds from the start of the episode
     cm: Tensor | None  # [T]
-    taps: Tensor | None  # [T, n_taps] pressures [Pa], None if the env has no taps
+    taps: Tensor | None  # [T, n_taps] pressures as Cp (p / that tick's q), None if the env has no taps
     act: Tensor  # [T, act_dim] what the policy asked for, in [-1, 1]
     applied: Tensor | None  # [T, act_dim] what the surfaces were sent after the safety layer; None if not known
 
@@ -106,10 +109,10 @@ class SessionReader:
         self.latest: EpisodeDetail | None = None
         self._seen: set[str] = set()
         self._cm_col: int | None = None
-        # Tunnel obs frame = [taps / tap_scale_pa, commands in effect]; with history, the newest frame is last.
+        # Tunnel obs frame = [targets, alpha, q, taps as Cp, commands in effect], so taps and commands are its last
+        # values whatever is tracked; with history, the newest frame is last.
         self._n_taps = 0
         self._n_surfaces = 0
-        self._tap_scale = 1.0
 
     # ----- episodes -----
     def poll(self) -> int:
@@ -135,11 +138,10 @@ class SessionReader:
         if self.cfg is None and config_path(self.shared).exists():
             cfg = read_config(self.shared)
             env = env_dims(cfg)
-            self._cm_col = env.priv_names.index("cm") if "cm" in env.priv_names else None
+            self._cm_col = next((env.priv_names.index(n) for n in ("C_m", "cm") if n in env.priv_names), None)
             if isinstance(cfg.env.params, WindTunnelParams):
                 self._n_taps = cfg.env.params.rig.n_taps
                 self._n_surfaces = cfg.env.params.rig.n_surfaces
-                self._tap_scale = cfg.env.params.tap_scale_pa
             self.cfg = cfg
         return self.cfg is not None
 
@@ -183,7 +185,7 @@ class SessionReader:
             # next_obs, like Cm: what was measured during each step, after its command went out. Its newest frame
             # also holds the command then in effect, i.e. what the safety layer let through.
             newest = tr["next_obs"][::n, -(self._n_taps + self._n_surfaces):]
-            taps = newest[:, : self._n_taps] * self._tap_scale
+            taps = newest[:, : self._n_taps]
             applied = newest[:, self._n_taps:]
         return EpisodeDetail(meta=meta, t=t, cm=None if cm is None else cm[::n], taps=taps, act=act, applied=applied)
 
@@ -300,6 +302,46 @@ class SessionReader:
         return _age_s(status.last_ok) if status and status.last_ok else None
 
     # ----- stop -----
+    # ----- targets -----
+    def tracking(self) -> dict[str, LoadTarget]:
+        """The loads the session holds at a target, with their trained ranges, in observation order; {} if its env
+        has no targets."""
+        params = self.cfg.env.params if self.cfg else None
+        if not isinstance(params, WindTunnelParams):
+            return {}
+        return {name: params.tracking[name] for name in params.tracked}
+
+    def config_eval_targets(self) -> dict[str, float]:
+        """What eval and baseline episodes hold when no targets are set here (the config's eval_targets)."""
+        params = self.cfg.env.params if self.cfg else None
+        return dict(params.eval_targets) if isinstance(params, WindTunnelParams) else {}
+
+    @property
+    def eval_every(self) -> int | None:
+        return self.cfg.distributed.eval_every if self.cfg else None
+
+    def target_request(self) -> TargetRequest | None:
+        return read_targets(self.shared)
+
+    def set_target_request(self, request: TargetRequest | None) -> None:
+        """Targets for the actor's episodes from its next one on (checked against the trained ranges first), or
+        None to go back to the config's. Raises ValueError for a load that is not tracked or a target outside its
+        range, before anything is written."""
+        if request is not None:
+            check_targets(request.targets, self.tracking())
+        write_targets(self.shared, request)
+
+    def latest_targets(self) -> tuple[int, dict[str, float], bool] | None:
+        """The newest episode's id, the targets it ended with, and whether any were set (not all drawn at random);
+        None before an episode has recorded them."""
+        if not self.episodes:
+            return None
+        last = self.episodes[-1]
+        targets = {k.removeprefix("target_"): v for k, v in last.info.items() if k.startswith("target_")}
+        if not targets:
+            return None
+        return last.episode_id, targets, last.info.get("targets_pinned", 0.0) > 0
+
     def stop_requested(self) -> bool:
         return stop_path(self.shared).exists()
 

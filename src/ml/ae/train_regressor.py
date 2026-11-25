@@ -58,8 +58,8 @@ class RegressorTrainConfig(TomlConfig):
     lr: float = 1e-3
     weight_decay: float = 1e-4
     noise_cp: float = SENSOR_NOISE_CP  # sensor noise, independent on every frame, in Cp
-    bias_cp: float = 0.01  # placeholder: std of each tap's offset, held over the window, in Cp
-    gain_error: float = 0.02  # placeholder: std of each tap's fractional gain error, held over the window
+    bias_cp: float = 0.01  # TODO: from the taps' calibration. Std of each tap's offset, held over the window, in Cp
+    gain_error: float = 0.02  # TODO: from the taps' calibration. Std of each tap's fractional gain error, over the window
     seed: int = 0
 
 

@@ -52,6 +52,44 @@ LOSSES_NOTES = r"""
 """
 
 
+REWARD_NOTES = r"""
+    Each tracked load $i$ (lift $C_L$, pitch $C_m$, roll $C_l$, any mix) is held at its target $C_i^*$, measured by
+    the load cell at that tick's dynamic pressure and angle of attack:
+
+    $$r = -\Big[\sum_i w_i \Big(\frac{C_i - C_i^*}{s_i}\Big)^2 + \lambda_u\,\overline{u^2} + \lambda_{\Delta u}\,\overline{(u - u_{prev})^2}\Big]$$
+
+    $s_i$: the load's typical uncontrolled excursion in gusts, so a typical miss costs $w_i$. $u$: deflection from
+    neutral. Training episodes draw $C_i^*$ from its range; evaluation episodes, and anything set in the Session tab,
+    pin it.
+"""
+
+
+def _tracked(cfg: RunConfig) -> tuple[str, ...]:
+    """The loads a wind tunnel run holds at a target, in observation order; () for any other env."""
+    params = cfg.env.params
+    return params.tracked if isinstance(params, WindTunnelParams) else ()
+
+
+def _task_dim(cfg: RunConfig) -> int:
+    """Inputs that say what to do and where: one target per tracked load, then alpha and q (wind tunnel runs)."""
+    return len(_tracked(cfg)) + 2 if isinstance(cfg.env.params, WindTunnelParams) else 0
+
+
+def _obs_notes(cfg: RunConfig, obs_dim: int) -> str | None:
+    """What the observation of a wind tunnel run is made of, part by part."""
+    params = cfg.env.params
+    if not isinstance(params, WindTunnelParams):
+        return None
+    frames = cfg.env.spec.history_len
+    per_frame = obs_dim // frames
+    return (
+        f"Per frame ({per_frame}): the target of each tracked load ({', '.join(params.tracked)}; where it sits in its "
+        f"range, -1 to 1), the angle of attack and dynamic pressure (measured each tick, scaled), "
+        f"{params.rig.n_taps} taps as Cp = p / q, and the {params.rig.n_surfaces} surface commands in effect."
+        + (f" The last {frames} frames, oldest first." if frames > 1 else "")
+    )
+
+
 def _plant(system: neurolume.System, cfg: RunConfig, act_dim: int, obs_dim: int) -> neurolume.Component:
     return system.block("env", label=f"Env: {cfg.env.kind}", input_shape=[act_dim], output_shape=[obs_dim])
 
@@ -86,7 +124,7 @@ def build_system(cfg: RunConfig) -> neurolume.System:
     plant = _plant(system, cfg, act_dim, obs_dim)
     obs = system.block(
         "obs", label="Observation", description="what the deployed actor sees",
-        input_shape=[obs_dim], output_shape=[obs_dim],
+        input_shape=[obs_dim], output_shape=[obs_dim], notes=_obs_notes(cfg, obs_dim),
     )
     actor = system.add("actor", make_policy(cfg), (obs_dim,), label="Actor: squashed Gaussian")
     sample = _sample(system, act_dim)
@@ -106,7 +144,13 @@ def build_system(cfg: RunConfig) -> neurolume.System:
         system.connect(priv, critic, label="priv", to="priv")
     system.connect(obs, critic, label="s", to="obs")
     system.connect(sample, critic, label="a", to="act")
-    system.connect(critic, _losses(system, cfg), label="Q1, Q2")
+    losses = _losses(system, cfg)
+    system.connect(critic, losses, label="Q1, Q2")
+    if tracked := _tracked(cfg):
+        reward = system.block("reward", label="Tracking reward", description=f"hold {', '.join(tracked)} at targets",
+                              output_shape=[1], notes=REWARD_NOTES)
+        system.connect(plant, reward, label=f"{', '.join(tracked)}, targets")
+        system.connect(reward, losses, label="r")
     return system
 
 
@@ -124,11 +168,11 @@ def build_autoencoder_training(cfg: RunConfig) -> neurolume.System:
     heads = ", ".join(LOAD_HEADS)
     system = neurolume.System("Sparse-tap latent: autoencoder training")
     data = system.block(
-        "data", label="Tap pressures", description="CFD at the tap positions, then tunnel runs",
+        "data", label="Tap pressures (Cp)", description="CFD at the tap positions, then tunnel runs",
         output_shape=[n_taps],
         notes="A random validity mask is applied to the input only.",
     )
-    loads = system.block("loads", label=f"Loads: {heads}", description="CFD forces, then the tunnel balance",
+    loads = system.block("loads", label=f"Loads: {heads}", description="CFD forces, then the tunnel load cell",
                          output_shape=[len(LOAD_HEADS)])
     # Three networks, not one: the viewer lays a network's layers in a row, so heads branching off z would be drawn
     # after the decoder. Linked here, E -> D reads as the autoencoder and the heads hang off its bottleneck.
@@ -161,13 +205,21 @@ def build_latent_training(cfg: RunConfig) -> neurolume.System:
     env = env_dims(cfg)
     n_taps, k = _tap_counts(cfg)
     act_dim = env.act_dim
-    actor_in = LATENT_DIM + act_dim  # z_hat plus the previous action
-    priv_dim = env.priv_dim + LATENT_DIM  # balance (and the env's other privileged signals) plus the true z
+    task_dim = _task_dim(cfg)
+    actor_in = LATENT_DIM + act_dim + task_dim  # z_hat, the previous action, and the targets with alpha and q
+    priv_dim = env.priv_dim + LATENT_DIM  # the load cell's tracked loads plus the true z
 
     system = neurolume.System("Sparse-tap latent: SAC training")
     plant = _plant(system, cfg, act_dim, env.obs_dim)
+    task = system.block(
+        "task", label="Targets, alpha, q", description="what to hold, and the operating point",
+        input_shape=[task_dim], output_shape=[task_dim],
+        notes=f"One target per tracked load ({', '.join(_tracked(cfg))}): drawn from its range in training episodes, "
+              "pinned in evaluation ones. Alpha and q are measured every tick: they drift as the tunnel runs, and the "
+              "wing's response depends on them.",
+    )
     taps = system.block(
-        "taps", label="Tap pressures", description="stored raw in the replay buffer",
+        "taps", label="Tap pressures (Cp)", description="stored raw in the replay buffer",
         input_shape=[n_taps], output_shape=[n_taps],
         notes="The buffer stores raw taps, not latents: with the autoencoder and g frozen, z and z_hat are recomputed "
               "when a batch is sampled, so refitting g needs no new data.",
@@ -192,7 +244,7 @@ def build_latent_training(cfg: RunConfig) -> neurolume.System:
         output_shape=[act_dim],
     )
     priv = system.block(
-        "priv", label="Privileged", description="balance + true z, critic only",
+        "priv", label="Privileged", description="load cell + true z, critic only",
         input_shape=[env.priv_dim + LATENT_DIM], output_shape=[priv_dim],
         notes=f"The env's privileged signals ({', '.join(env.priv_names)}) and z = E(all {n_taps} taps). The critic "
               "is training-only, so the autoencoder never runs on the wing.",
@@ -206,6 +258,8 @@ def build_latent_training(cfg: RunConfig) -> neurolume.System:
     system.connect(g, actor, label="z_hat", shape=[LATENT_DIM])
     system.connect(plant, prev, label="prev a", shape=[act_dim])
     system.connect(prev, actor, label="prev a")
+    system.connect(plant, task, label="targets, alpha, q", shape=[task_dim])
+    system.connect(task, actor, label="targets, alpha, q")
     system.connect(actor, sample, label="mean, log std")
     system.connect(sample, plant, label="a")
 
@@ -216,20 +270,34 @@ def build_latent_training(cfg: RunConfig) -> neurolume.System:
     system.connect(priv, critic, label="priv", to="priv")
     system.connect(g, critic, label="z_hat", to="obs", shape=[LATENT_DIM])
     system.connect(prev, critic, label="prev a", to="obs")
+    system.connect(task, critic, label="targets, alpha, q", to="obs")
     system.connect(sample, critic, label="a", to="act")
-    system.connect(critic, _losses(system, cfg), label="Q1, Q2")
+    losses = _losses(system, cfg)
+    system.connect(critic, losses, label="Q1, Q2")
+    reward = system.block("reward", label="Tracking reward", description=f"hold {', '.join(_tracked(cfg))} at targets",
+                          output_shape=[1], notes=REWARD_NOTES)
+    system.connect(plant, reward, label=f"{', '.join(_tracked(cfg))}, targets")
+    system.connect(reward, losses, label="r")
     return system
 
 
 def build_deployment(cfg: RunConfig) -> neurolume.System:
-    """What runs on the wing: k taps, a fault mask, g and the actor. No balance, no encoder, no critic. The decoder
-    only runs inside fault detection."""
+    """What runs on the wing: k taps, a fault mask, g and the actor, given its targets and the operating point. No load
+    cell, no encoder, no critic. The decoder only runs inside fault detection."""
     env = env_dims(cfg)
     n_taps, k = _tap_counts(cfg)
     act_dim = env.act_dim
+    task_dim = _task_dim(cfg)
+    actor_in = LATENT_DIM + act_dim + task_dim
     system = neurolume.System("Sparse-tap latent: deployment")
-    wing = system.block("wing", label=f"Wing, {k} taps only", description="no balance", input_shape=[act_dim],
+    wing = system.block("wing", label=f"Wing, {k} taps only", description="no load cell", input_shape=[act_dim],
                         output_shape=[k])
+    targets = system.block(
+        "targets", label="Targets", description="chosen by the operator", output_shape=[len(_tracked(cfg))],
+        notes="Any value inside the range each load was trained on: the Session tab's Targets pop-up or set_targets, "
+              "from the next episode. No retraining.",
+    )
+    flow = system.block("flow", label="Alpha, q", description="rig pitch sensor and pitot-static", output_shape=[2])
     inversion = system.block(
         "inversion", label="Latent inversion", description="z* = argmin_z |mask * (D(z) - taps)|",
         input_shape=[k], output_shape=[k],
@@ -262,9 +330,8 @@ def build_deployment(cfg: RunConfig) -> neurolume.System:
     )
     g = system.add("g", LatentRegressor(2 * k), (HISTORY_FRAMES * 2 * k,), label="g: MLP (mask-aware)")
     prev = system.block("prev", label="Previous action", output_shape=[act_dim])
-    policy = SquashedGaussianPolicy(LATENT_DIM + act_dim, act_dim, hidden=cfg.policy.hidden,
-                                    init_log_std=cfg.policy.init_log_std)
-    actor = system.add("actor", policy, (LATENT_DIM + act_dim,), label="Actor (deterministic mean)")
+    policy = SquashedGaussianPolicy(actor_in, act_dim, hidden=cfg.policy.hidden, init_log_std=cfg.policy.init_log_std)
+    actor = system.add("actor", policy, (actor_in,), label="Actor (deterministic mean)")
     fail_safe = system.block(
         "fail_safe", label="Fail-safe", description="too many taps flagged", output_shape=[act_dim],
         notes="Hold the last action, fall back to a conservative policy, or end the run: still to decide.",
@@ -281,6 +348,9 @@ def build_deployment(cfg: RunConfig) -> neurolume.System:
     system.connect(history, g, label=f"{HISTORY_FRAMES} x {k} taps + mask")
     system.connect(g, actor, label="z_hat", shape=[LATENT_DIM])
     system.connect(prev, actor, label="prev a")
+    system.connect(targets, actor, label="targets")
+    system.connect(wing, flow, label="alpha, q", shape=[2])
+    system.connect(flow, actor, label="alpha, q")
     system.connect(detector, fail_safe, label="mask")
     system.connect(actor, fail_safe, label="a")
     system.connect(fail_safe, wing, label="a")

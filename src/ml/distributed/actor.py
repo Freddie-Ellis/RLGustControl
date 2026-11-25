@@ -14,6 +14,10 @@ Four kinds of episode:
     eval       the policy's mean action (every `eval_every`-th episode)
     baseline   surfaces at neutral (every `baseline_every`-th): the uncontrolled wing the evals are compared with
 An episode ends early if the env says it has terminated (a safety trip).
+
+Targets (envs whose task has one, e.g. a load to hold): set before each episode, from the Session tab's targets.json
+if it covers the episode, else the config's eval_targets for eval and baseline episodes, else drawn at random. So a
+change in the Session tab applies from the next episode on (see `Actor.apply_targets`).
 """
 
 import sys
@@ -28,9 +32,11 @@ from torch import Tensor
 from src.ml.distributed.files import (
     SESSION,
     EpisodeMetaData,
+    TargetRequest,
     config_path,
     latest_weights,
     read_config,
+    read_targets,
     shared,
     stop_path,
     transitions_to_frame,
@@ -54,6 +60,7 @@ class Actor:
         self.episode_id = self._next_episode_id()
         self.session_id = session_id or datetime.now().astimezone().strftime("%Y%m%d-%H%M%S")
         self._unsent: list[Episode] = []  # episodes whose write failed, retried before the next one
+        self._request: TargetRequest | None = None  # the Session tab's targets last seen, to report changes
 
     def _next_episode_id(self) -> int:
         """Continue numbering after any episodes already in the outbox, so a restarted actor never overwrites."""
@@ -68,6 +75,27 @@ class Actor:
             self.policy.load(path)
             print(f"loaded weights v{self.version}", flush=True)
 
+    def apply_targets(self, scored: bool) -> None:
+        """Pin this episode's targets, before it starts. `scored`: an evaluation or baseline episode.
+
+        targets.json (the Session tab's, re-read before every episode, so a change applies from the next one) wins
+        where its scope covers the episode; otherwise evals and baselines hold the config's eval_targets, so they are
+        scored on the same task all session, and training episodes draw theirs. Targets the env refuses (not
+        tracked, outside the trained range) are reported and ignored: the tunnel keeps running."""
+        request = read_targets(self.shared)
+        if request != self._request:
+            print("targets from the Session tab: " + ("none, back to the config's" if request is None else
+                  f"{request.targets} for {'every episode' if request.scope == 'all' else 'eval and baseline episodes'}"
+                  ", from this episode on"), flush=True)
+            self._request = request
+        fallback = self.env.eval_targets if scored else {}
+        targets = request.targets if request is not None and (request.scope == "all" or scored) else fallback
+        try:
+            self.env.set_targets(targets)
+        except ValueError as e:
+            print(f"targets {targets} not applied ({e}); using {fallback or 'random ones'}", file=sys.stderr, flush=True)
+            self.env.set_targets(fallback)
+
     def choose(self, obs: Tensor, evaluate: bool, baseline: bool = False) -> Tensor:
         if baseline:
             return self.env.zero_action(obs)
@@ -81,6 +109,7 @@ class Actor:
     def run_episode(self, evaluate: bool, baseline: bool = False) -> Episode:
         """One episode in every env. Returns its metadata and one row per transition (T * N rows)."""
         env = self.env
+        self.apply_targets(evaluate or baseline)
         obs, priv = env.reset(), env.privileged()
         steps: list[tuple[Tensor, ...]] = []
         extras: dict[str, list[Tensor]] = {}

@@ -14,10 +14,30 @@ history_len = 1  # observation frames the actor sees; raise it to give the actor
 [env.params]
 io = "mock"
 settle_s = 0.5
-cm_scale = 0.03
 action_cost = 0.05
 rate_cost = 0.05
 trip_penalty = 100.0  # taken off the reward when the safety layer trips (which also ends the episode)
+
+# Loads held at a target: one table per load, any mix of C_L (lift), C_m (pitch) and C_l (roll).
+# Only the loads listed are tracked. Per load:
+#   scale   typical uncontrolled excursion in gusts: an error this size costs `weight` (measure it from baseline episodes)
+#   weight  how much it counts (default 1)
+#   target  [low, high]: each episode's target is drawn from this range; [x, x] holds the load at x
+# retarget_every_s = 0.5  # also draw new targets this often within an episode (step changes); leave out for once
+# The policy is given its target, so one trained policy holds any target inside the ranges. Evaluation and baseline
+# episodes hold these (each tracked, inside its range), so every eval in the session is scored on the same task:
+# eval_targets = { C_L = 0.45, C_m = 0.0 }
+[env.params.tracking.C_m]
+scale = 0.03            # TODO: measure from baseline episodes
+target = [0.0, 0.0]
+
+# [env.params.tracking.C_L]
+# scale = 0.05          # TODO: measure from baseline episodes
+# target = [0.3, 0.6]   # TODO: what the surfaces can reach at the rig's angle of attack
+
+# [env.params.tracking.C_l]
+# scale = 0.005         # TODO: measure from baseline episodes
+# target = [0.0, 0.0]
 
 [env.params.safety]
 max_rate = 20.0
@@ -25,6 +45,13 @@ cm_trip = 0.3
 
 [env.params.mock]
 daq_rate_hz = 1000.0
+# The mock tunnel's operating point; the real one comes from the DAQ's q and alpha channels. Drift them to check the
+# policy copes with a tunnel whose speed and pitch change while it runs:
+# q_pa = 500.0
+# alpha_deg = 8.0
+# q_drift_pa = 50.0       # +- amplitude of a slow sine
+# alpha_drift_deg = 2.0
+# drift_period_s = 60.0
 
 [policy]
 hidden = 256

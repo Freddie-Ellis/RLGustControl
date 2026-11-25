@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 
 import torch
@@ -97,6 +97,17 @@ class Env(ABC):
         """Uncontrolled baseline: the action that does nothing. Zeros, unless the env's neutral is elsewhere."""
         return torch.zeros(obs.shape[0], self.act_dim)
 
+    def set_targets(self, targets: Mapping[str, float]) -> None:
+        """For envs whose task has a target the policy is given (e.g. a load to hold): pin the named ones to these
+        values, from now until changed; the others are drawn as in training. {} unpins them all."""
+        if targets:
+            raise ValueError(f"{type(self).__name__} has no targets to set")
+
+    @property
+    def eval_targets(self) -> dict[str, float]:
+        """The targets evaluation (and baseline) episodes pin, so they are all scored on the same task."""
+        return {}
+
     @torch.no_grad()
     def run(self, act_fn: ActFn | None = None, steps: int | None = None) -> Trace:
         """Roll out one episode in every parallel env with `act_fn` (zero action if None) and record it."""
@@ -167,6 +178,13 @@ class HistoryWrapper(Env):
 
     def zero_action(self, obs: Tensor) -> Tensor:
         return self.env.zero_action(obs)
+
+    def set_targets(self, targets: Mapping[str, float]) -> None:
+        self.env.set_targets(targets)
+
+    @property
+    def eval_targets(self) -> dict[str, float]:
+        return self.env.eval_targets
 
     def privileged(self) -> Tensor:
         return self.env.privileged()

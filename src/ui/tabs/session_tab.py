@@ -44,6 +44,7 @@ from src.ml.distributed.files import (
 )
 from src.ml.distributed.session import EpisodeKind, EpisodeSummary, SessionReader
 from src.ml.run_config import RunConfig
+from src.ui.tabs.targets_dialog import TargetsDialog
 from src.ui.utils.dynamic_vb import DynamicViewBox
 from src.ui.utils.logger import RED, Readout, TelemetryConsole
 
@@ -97,6 +98,10 @@ class SessionTab(QWidget):
         logs.clicked.connect(self._show_consoles)
         watch = QPushButton("Watch")
         watch.clicked.connect(self._watch)
+        self.targets_btn = QPushButton("Targets…")
+        self.targets_btn.setToolTip("Set the loads' targets the policy holds, from the actor's next episode")
+        self.targets_btn.clicked.connect(self._edit_targets)
+        self.targets_btn.setEnabled(False)
         self.stop_btn = QPushButton("Stop session")
         self.stop_btn.clicked.connect(self._toggle_stop)
         self.stop_btn.setEnabled(False)
@@ -106,15 +111,16 @@ class SessionTab(QWidget):
         top.addWidget(self.session, 1)
         top.addWidget(QLabel("Config"))
         top.addWidget(self.config)
-        for b in (self.profile, launch_learner, launch_actor, launch_sync, logs, watch, self.stop_btn):
+        for b in (self.profile, launch_learner, launch_actor, launch_sync, logs, watch, self.targets_btn, self.stop_btn):
             top.addWidget(b)
 
         self.config_info = QLabel("")  # what the session runs, so launching the wrong thing is visible
         self.actor_status = QLabel(_dot(IDLE, "Actor: not watching"))
         self.learner_status = QLabel(_dot(IDLE, "Learner: -"))
         self.progress = QLabel("")
+        self.targets_status = QLabel("")  # the targets set here, and what the latest episode actually ran with
         status = QHBoxLayout()
-        for lbl in (self.config_info, self.actor_status, self.learner_status, self.progress):
+        for lbl in (self.config_info, self.actor_status, self.learner_status, self.progress, self.targets_status):
             lbl.setTextFormat(Qt.TextFormat.RichText)
             status.addWidget(lbl)
             status.addSpacing(24)
@@ -207,7 +213,7 @@ class SessionTab(QWidget):
         self.act_bar.setImageItem(self.act_image, insert_in=self.p_act)
         self.taps_image = pg.ImageItem()
         self.p_taps.addItem(self.taps_image)
-        self.taps_bar = pg.ColorBarItem(values=(-1.0, 1.0), colorMap=colormap, interactive=False, label="Pa")
+        self.taps_bar = pg.ColorBarItem(values=(-1.0, 1.0), colorMap=colormap, interactive=False, label="Cp")
         self.taps_bar.setImageItem(self.taps_image, insert_in=self.p_taps)
         self.taps_mode = QComboBox()
         self.taps_mode.addItems(["fluctuation", "absolute"])
@@ -523,6 +529,28 @@ class SessionTab(QWidget):
         )
         self.progress.setText(f"{len(r.episodes)} episodes · {r.transitions} transitions · {warm_text}")
         self.stop_btn.setText("Clear STOP" if r.stop_requested() else "Stop session")
+        self._draw_targets()
+
+    def _draw_targets(self) -> None:
+        r = self.reader
+        assert r is not None
+        tracked = bool(r.tracking())
+        self.targets_btn.setEnabled(tracked)
+        if not tracked:
+            self.targets_status.setText("")
+            return
+        request = r.target_request()
+        latest = r.latest_targets()
+        set_text = ("config's" if request is None else
+                    ", ".join(f"{k} {v:.3g}" for k, v in request.targets.items()) or "all random")
+        scope = "" if request is None else (" (every episode)" if request.scope == "all" else " (evals)")
+        ran = "" if latest is None else f" · ep #{latest[0]} ran " + ", ".join(f"{k} {v:.3g}" for k, v in latest[1].items())
+        self.targets_status.setText(_dot(GOOD if request is not None else IDLE, f"Targets: {set_text}{scope}{ran}"))
+
+    def _edit_targets(self) -> None:
+        if self.reader is not None and self.reader.tracking():
+            TargetsDialog(self.reader, self).exec()
+            self._draw_status()
 
     def _draw_health(self) -> None:
         """The rig, the learner and the HPC link, each on its own: green while there is nothing to look at."""
@@ -632,7 +660,7 @@ class SessionTab(QWidget):
 
         self.p_taps.setVisible(d.taps is not None)
         if d.taps is not None:
-            taps = d.taps.numpy()  # [T, n_taps] Pa
+            taps = d.taps.numpy()  # [T, n_taps] Cp
             if self.taps_mode.currentText() == "fluctuation":
                 # Each tap minus its episode mean: the steady Cp distribution would otherwise hide the gusts.
                 taps = taps - taps.mean(axis=0, keepdims=True)

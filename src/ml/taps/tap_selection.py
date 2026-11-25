@@ -32,7 +32,7 @@ from torch import Tensor
 from src.config import CONFIG
 
 N_TAPS: int = CONFIG.rig.n_taps  # the wing itself is defined once, in src/config.py
-SENSOR_NOISE_CP: float = 0.005  # placeholder: tap measurement noise std, in Cp
+SENSOR_NOISE_CP: float = 0.005  # TODO: from the pressure scanner's spec or a still-air recording. Tap noise std, in Cp
 KNOWN_JITTER: float = 1e-10  # keeps the estimator solve well posed; known inputs are noise free
 INTERP_NEIGHBOURS: int = 4  # case surface nodes used to interpolate Cp at each candidate point
 INTERP_CHUNK: int = 512  # candidate points per distance computation, bounds memory (chunk x nodes doubles)

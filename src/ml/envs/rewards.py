@@ -3,16 +3,22 @@
 from torch import Tensor
 
 
-def pitch_reward(
-    cm: Tensor, u: Tensor, prev_u: Tensor, cm_scale: float, action_cost: float, rate_cost: float
+def tracking_reward(
+    error: Tensor, weights: Tensor, u: Tensor, prev_u: Tensor, action_cost: float, rate_cost: float
 ) -> Tensor:
-    """Hold Cm at 0 with small, smooth deflections. cm [N]; u, prev_u [N, n_surfaces] normalised to [-1, 1].
+    """Hold each tracked load at its target with small, smooth deflections.
 
-    `cm_scale` is a typical uncontrolled Cm excursion. Dividing by it keeps the tracking term around 1 whatever
-    the rig's absolute Cm, so it stays comparable to SAC's entropy bonus. The action terms use the mean over
-    surfaces, so their weight does not change with the number of surfaces.
+    error [N, K]: (load - target) / scale for each of the K tracked loads, where `scale` is the load's typical
+        uncontrolled excursion in gusts, so a typical miss costs about its weight whatever the load's absolute size,
+        and the tracking term stays comparable to SAC's entropy bonus.
+    weights [K]: how much each tracked load counts.
+    u, prev_u [N, n_surfaces]: deflections now and one step before, normalised to [-1, 1] (0 = neutral). The action
+        terms use the mean over surfaces, so their weight does not change with the number of surfaces.
+
+    E.g. tracking C_L and C_m with scales 0.05 and 0.01, 0.05 too much lift and 0.01 too little pitch cost
+    (0.05 / 0.05)^2 + (0.01 / 0.01)^2 = 2 before the action terms.
     """
-    tracking = (cm / cm_scale) ** 2
+    tracking = (weights * error.pow(2)).sum(-1)
     effort = u.pow(2).mean(-1)  # actuator load / power
     rate = (u - prev_u).pow(2).mean(-1)  # chatter wears servos and excites the model
     return -(tracking + action_cost * effort + rate_cost * rate)

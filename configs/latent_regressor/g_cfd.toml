@@ -10,7 +10,7 @@ seed = 0
 autoencoder_run = "runs/autoencoder/REPLACE_WITH_RUN_FOLDER"
 
 # Network (defaults in src/ml/ae/sparse_latent.py)
-k_taps = 10             # deployed taps: the first k of the autoencoder's tap layout; the plan's guess is 8 to 12
+k_taps = 10             # TODO: choose from experiments (plan: 8 to 12). Deployed taps: the first k of the layout
 history_frames = 4      # frames in g's window (CFD is steady, so they only differ by noise until tunnel data)
 hidden = 128            # width of g's layers
 mask_aware = false      # true: g also takes a validity mask and is trained with taps randomly lost
@@ -23,5 +23,5 @@ weight_decay = 0.0001
 
 # Sensor augmentation on g's inputs (the plan's robustness step)
 noise_cp = 0.005        # noise on every frame, in Cp
-bias_cp = 0.01          # placeholder: std of each tap's offset, held over the window, in Cp
-gain_error = 0.02       # placeholder: std of each tap's fractional gain error, held over the window
+bias_cp = 0.01          # TODO: from the taps' calibration. Std of each tap's offset, held over the window, in Cp
+gain_error = 0.02       # TODO: from the taps' calibration. Std of each tap's fractional gain error, over the window

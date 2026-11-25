@@ -2,7 +2,8 @@
 
 `WindTunnelEnv` only talks to the rig through `TunnelIO`, so the same env runs against `MockTunnelIO` on a laptop
 and against the real DAQ and servos in the tunnel. Units are physical here (Pa, N, N m, degrees); the env turns them
-into normalised observations and Cm.
+into normalised observations and the load coefficients, with the dynamic pressure and angle of attack measured
+alongside them, since neither is constant while the tunnel runs.
 """
 
 from dataclasses import dataclass
@@ -13,10 +14,15 @@ from torch import Tensor
 
 @dataclass(frozen=True)
 class SensorBlock:
-    """Every DAQ sample that arrived since the last read. M samples (M varies with timing; may be 0)."""
+    """Every DAQ sample that arrived since the last read. M samples (M varies with timing; may be 0).
+
+    Loads are in the model frame the CFD uses (x aft, y starboard, z up), with moments about the moment reference
+    point: a backend rotates and shifts its load cell's own axes into this frame."""
     t: Tensor  # [M] seconds since the IO was opened
-    taps: Tensor  # [M, n_taps] surface pressures [Pa]
-    loads: Tensor  # [M, 3] balance: Fx, Fz [N], My [N m] about the moment reference point
+    taps: Tensor  # [M, n_taps] surface pressures [Pa], relative to the freestream static pressure
+    loads: Tensor  # [M, 6] 6-axis load cell: Fx, Fy, Fz [N], Mx, My, Mz [N m]
+    q: Tensor  # [M] freestream dynamic pressure [Pa] (e.g. the tunnel's pitot-static): it changes as the tunnel runs
+    alpha: Tensor  # [M] the wing's angle of attack [deg] on the rig, from its pitch sensor: it changes as the rig moves
 
 
 class TunnelIO(Protocol):

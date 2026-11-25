@@ -9,6 +9,8 @@
         STOP                        create to stop the actor after its current episode
         learner_run.txt             path of the learner's runs/ directory (for the Session tab)
         sync_status.json            SyncStatus: when the sync last reached the HPC (tunnel PC only, never uploaded)
+        targets.json                TargetRequest: targets set in the Session tab, which the actor applies from its
+                                    next episode (tunnel PC only, never uploaded)
 
 Every file is written to `<name>.tmp` and then renamed (src/ml/atomic.py), so a reader never sees a half-written
 file even over a network share. Keep the shared folder outside OneDrive: sync can lock or duplicate files mid-write.
@@ -21,7 +23,7 @@ import re
 import sys
 from datetime import datetime
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Literal
 
 import polars as pl
 import torch
@@ -258,5 +260,41 @@ def read_sync_status(shared: Path) -> SyncStatus | None:
     """None if no sync has run on this folder (or its file was caught mid-write)."""
     try:
         return SyncStatus.model_validate_json(sync_status_path(shared).read_text())
+    except (OSError, ValueError):
+        return None
+
+
+# ----- targets -----
+type TargetScope = Literal["eval", "all"]
+
+
+class TargetRequest(BaseModel):
+    """Targets set while a session runs (the Session tab writes them). The actor re-reads them before every episode,
+    so they apply from the start of its next episode; the one running finishes with the targets it had."""
+
+    targets: dict[str, float]  # tracked load -> its target; tracked loads not listed are drawn as in training
+    # "eval": evaluation and baseline episodes only, in place of the config's eval_targets; training episodes keep
+    # drawing random targets, so the policy keeps learning all of them. "all": training episodes too, so the policy
+    # practises only these.
+    scope: TargetScope
+    written: datetime
+
+
+def targets_path(shared: Path) -> Path:
+    return shared / "targets.json"
+
+
+def write_targets(shared: Path, request: TargetRequest | None) -> None:
+    """Set the targets for the actor's next episodes, or with None go back to the config's (delete the file)."""
+    if request is None:
+        targets_path(shared).unlink(missing_ok=True)
+    else:
+        atomic_write_text(targets_path(shared), request.model_dump_json(indent=2))
+
+
+def read_targets(shared: Path) -> TargetRequest | None:
+    """None if no targets are set (or the file was caught mid-write: the next read gets it)."""
+    try:
+        return TargetRequest.model_validate_json(targets_path(shared).read_text())
     except (OSError, ValueError):
         return None

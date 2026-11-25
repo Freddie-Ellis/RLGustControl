@@ -1,6 +1,6 @@
 from functools import cache
 from pathlib import Path
-from typing import Literal, Self
+from typing import Any, Literal, Self
 
 import torch
 from pydantic import BaseModel, ConfigDict, model_validator
@@ -34,10 +34,21 @@ class RigParams(BaseModel):
     splitter_span_m: tuple[float, float] = (0.05, 0.23)  # |y| range
     splitter_trailing_edge_x_m: float = 0.372
     max_tap_behind_splitter_m: float = 0.035
-    # Calibration: Cm = My / (q S c).
-    q_inf: float = 500.0  # dynamic pressure [Pa], ~29 m/s
-    area: float = 0.12  # reference area [m^2]
-    mac: float = 0.35  # mean aerodynamic chord [m]
+    # Reference geometry: the 6-axis load cell's forces and moments -> coefficients, as the CFD defines them
+    # (src/cfd/solve_report.py): forces over q S, pitch over q S c, roll and yaw over q S b. The dynamic pressure q
+    # and the angle of attack change as the tunnel runs, so they are not constants here: the DAQ measures them with
+    # every sample (src/hw/io.py, SensorBlock).
+    area: float = 0.12  # TODO: the CFD's is 0.1689 (cad/uav/geometry.toml). Reference area [m^2]
+    mac: float = 0.35  # TODO: the CFD's is 0.3274 (cad/uav/geometry.toml). Mean aerodynamic chord [m]
+    span: float = 0.65  # wing span b [m], for the rolling and yawing moments (cad/uav/geometry.toml)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_measured(cls, data: Any) -> Any:
+        """q_inf and alpha_deg were constants here before the DAQ measured them: dropped from old configs."""
+        if isinstance(data, dict) and ("q_inf" in data or "alpha_deg" in data):
+            data = {k: v for k, v in data.items() if k not in ("q_inf", "alpha_deg")}
+        return data
 
     @model_validator(mode="after")
     def _check_surfaces(self) -> Self:

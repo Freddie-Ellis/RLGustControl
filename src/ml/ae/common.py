@@ -30,11 +30,12 @@ class Standardiser:
         return x * self.std + self.mean
 
 
-def split_rows(n: int, val_fraction: float, seed: int) -> tuple[Tensor, Tensor]:
-    """(training, validation) row indices, chosen at random."""
-    order = torch.randperm(n, generator=torch.Generator().manual_seed(seed))
-    n_val = round(val_fraction * n)
-    return order[n_val:].sort().values, order[:n_val].sort().values
+def fold_rows(n: int, folds: int, seed: int) -> list[tuple[Tensor, Tensor]]:
+    """(training, validation) row indices for each of `folds` cross-validation folds: the rows are shuffled and cut
+    into `folds` near-equal groups, and each group is held out once, so every row is validated exactly once."""
+    groups = torch.randperm(n, generator=torch.Generator().manual_seed(seed)).tensor_split(folds)
+    return [(torch.cat([g for j, g in enumerate(groups) if j != k]).sort().values, held_out.sort().values)
+            for k, held_out in enumerate(groups)]
 
 
 def r_squared(pred: Tensor, true: Tensor) -> Tensor:

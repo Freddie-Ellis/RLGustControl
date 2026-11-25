@@ -7,9 +7,10 @@ from the run's saved files only.
 
 Saved in <run folder>/plots/. Autoencoder run:
     history.png    losses and validation errors against epoch, best epoch marked
-    loads.png      predicted against true loads, training and validation runs, with the validation R^2
+    loads.png      predicted against true loads: the saved model's, and the cross-validated (out-of-fold) ones, with
+                   the cross-validated R^2
     latent.png     each latent dimension against alpha, coloured by sideslip
-    taps.png       each tap's validation reconstruction error on the planform
+    taps.png       each tap's validation (cross-validated) reconstruction error on the planform
 Latent regressor run:
     history.png    latent error, R^2 of z and of the loads, and all-tap Cp error, against the autoencoder's ceiling
     latent.png     z_hat = g(k taps) against z = E(all taps), per dimension
@@ -57,12 +58,20 @@ def _history(history: pl.DataFrame, summary: dict[str, float]) -> Figure:
 
 
 def _loads(latents: pl.DataFrame, summary: dict[str, float]) -> Figure:
+    """Predicted against true loads: the saved model's (by split) and, for a cross-validated autoencoder run, each
+    run's out-of-fold prediction (`<load>_cv`)."""
     names = [c.removesuffix("_pred") for c in latents.columns if c.endswith("_pred")]
     fig, axes = plt.subplots(1, len(names), figsize=(6 * len(names), 5.5), squeeze=False)
     for ax, name in zip(axes[0], names, strict=True):
+        shown = [f"{name}_pred"]
         for split, rows in latents.group_by("split"):
             ax.scatter(rows[name], rows[f"{name}_pred"], s=14, color=SPLIT_COLOURS[str(split[0])], label=split[0])
-        lo, hi = min(latents[name].min(), latents[f"{name}_pred"].min()), max(latents[name].max(), latents[f"{name}_pred"].max())
+        if f"{name}_cv" in latents.columns:
+            shown.append(f"{name}_cv")
+            ax.scatter(latents[name], latents[f"{name}_cv"], s=14, color=SPLIT_COLOURS["val"],
+                       label="cross-validated (held out)")
+        lo = min(latents[name].min(), *(latents[c].min() for c in shown))
+        hi = max(latents[name].max(), *(latents[c].max() for c in shown))
         ax.plot([lo, hi], [lo, hi], color="grey", lw=0.8)
         ax.set_title(f"{name}\nval R² {summary.get(f'val_{name}_r2', float('nan')):.3f}", fontsize=10)
         ax.set_xlabel(f"{name} (CFD)")

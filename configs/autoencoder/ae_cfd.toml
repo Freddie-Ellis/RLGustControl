@@ -15,5 +15,8 @@ input_noise_cp = 0.005  # sensor noise added to the input taps each epoch, in Cp
 # Data
 folds = 5               # k-fold cross-validation picks the epoch count and gives the validation errors, then
                         # the saved model trains on every run; 1 = no validation, train every run for `epochs`
+# Continue from an earlier run (fine-tuning): start from its weights and standardisation. latent_dim and hidden must
+# match it; a lower lr (e.g. 1e-4) keeps what it learnt.
+# init_from = "runs/autoencoder/20261125-132458_ae_cfd_test"
 # data_dir = "src/data/cfd"                            # extracted CFD (default: src/data/cfd.py's CFD_DATA_DIR)
 # taps_file = "src/ml/taps/selections/taps.parquet"    # tap layout from src/ml/taps/cfd_taps.py

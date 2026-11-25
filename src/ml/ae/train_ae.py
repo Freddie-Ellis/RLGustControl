@@ -18,6 +18,10 @@ to train it, and gives the validation errors:
     4. The saved model is trained on every run for the best epoch's number of epochs.
 With `folds` <= 1 there is no validation: the saved model is trained on every run for `epochs` epochs.
 
+Fine-tuning: with `init_from` set to an earlier run folder, every model starts from that run's weights and keeps its
+standardisation (so the weights keep their meaning), e.g. to carry a CFD-trained model on to wind tunnel data. The
+optimiser starts afresh.
+
 Run folder, AE_RUNS_DIR/<YYYYmmdd-HHMMSS>_<name>/:
     config.json      the AETrainConfig used
     history.csv      one row per epoch: training loss, and reconstruction and load errors on both splits, averaged
@@ -34,6 +38,7 @@ Errors are reported in physical units (Cp, coefficients) and as R^2, so runs wit
 directly; the losses are in standardised units.
 """
 
+import copy
 import json
 import math
 import time
@@ -79,6 +84,10 @@ class AETrainConfig(TomlConfig):
     input_noise_cp: float = SENSOR_NOISE_CP  # Gaussian noise added to the input taps each epoch, in Cp
     folds: int = 5  # cross-validation folds (see the module docstring); <= 1 trains on every run with no validation
     seed: int = 0
+    # An earlier run folder to continue from (fine-tuning): every model, the folds' included, starts from its weights
+    # and keeps its standardisation instead of a fresh one, so its weights keep their meaning. latent_dim and hidden
+    # must match it. If it was trained on the same runs, the folds' validation errors are optimistic.
+    init_from: Path | None = None
     data_dir: Path = CFD_DATA_DIR
     taps_file: Path = TAPS_FILE
 
@@ -205,18 +214,25 @@ class Fitted:
                     self.load_scale.inverse(self.model.loads(z).double()))
 
 
-def fit(cfg: AETrainConfig, data: AEData, train_rows: Tensor, val_rows: Tensor, epochs: int, label: str) -> Fitted:
-    """Train a fresh model on `train_rows` for `epochs` epochs, recording its errors on both sets every epoch.
+def fit(cfg: AETrainConfig, data: AEData, train_rows: Tensor, val_rows: Tensor, epochs: int, label: str,
+        init: TrainedAutoencoder | None = None) -> Fitted:
+    """Train a model on `train_rows` for `epochs` epochs, recording its errors on both sets every epoch. It starts
+    from fresh weights and standardisation fitted on `train_rows`, or from a copy of `init`'s weights and
+    standardisation.
 
     Seeded from cfg.seed, so the same rows and settings give the same model: training a fold again to fewer epochs
     gives the weights it had at that epoch."""
     torch.manual_seed(cfg.seed)
-    cp_scale, load_scale = Standardiser.fit(data.cp[train_rows]), Standardiser.fit(data.loads[train_rows])
+    if init is None:
+        cp_scale, load_scale = Standardiser.fit(data.cp[train_rows]), Standardiser.fit(data.loads[train_rows])
+        model = TapAutoencoder(data.cp.shape[1], cfg.latent_dim, cfg.hidden)
+    else:
+        cp_scale, load_scale = init.cp_scale, init.load_scale
+        model = copy.deepcopy(init.model)
     x, y = cp_scale(data.cp).float(), load_scale(data.loads).float()
     x_train, y_train, x_val, y_val = x[train_rows], y[train_rows], x[val_rows], y[val_rows]
     noise = (cfg.input_noise_cp / cp_scale.std).float()  # the sensor noise in each tap's standardised units
 
-    model = TapAutoencoder(x.shape[1], cfg.latent_dim, cfg.hidden)
     optimiser = torch.optim.Adam(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
     history: list[dict[str, float]] = []
     started = time.perf_counter()
@@ -257,13 +273,14 @@ def score(history: pl.DataFrame, load_weight: float) -> pl.Series:
     return history["val_recon"] + load_weight * history["val_load"]
 
 
-def cross_validate(cfg: AETrainConfig, data: AEData, run_dir: Path) -> CrossValidation:
+def cross_validate(cfg: AETrainConfig, data: AEData, run_dir: Path, init: TrainedAutoencoder | None) -> CrossValidation:
     """Steps 1 to 3 of the module docstring."""
     folds = fold_rows(data.runs.height, cfg.folds, cfg.seed)
     histories: list[pl.DataFrame] = []
     mean = pl.DataFrame()
     for k, (train_rows, val_rows) in enumerate(folds):
-        histories.append(pl.DataFrame(fit(cfg, data, train_rows, val_rows, cfg.epochs, f"fold {k + 1}/{cfg.folds}").history))
+        histories.append(pl.DataFrame(
+            fit(cfg, data, train_rows, val_rows, cfg.epochs, f"fold {k + 1}/{cfg.folds}", init).history))
         mean = pl.concat(histories).group_by("epoch", maintain_order=True).mean()
         mean.write_csv(run_dir / "history.csv")  # so far: watch it while the later folds train
     best_epoch = int(mean["epoch"][int(score(mean, cfg.load_weight).arg_min() or 0)])
@@ -272,24 +289,42 @@ def cross_validate(cfg: AETrainConfig, data: AEData, run_dir: Path) -> CrossVali
     fold = torch.empty(data.runs.height, dtype=torch.int64)
     cp, loads = torch.empty_like(data.cp), torch.empty_like(data.loads)
     for k, (train_rows, val_rows) in enumerate(folds):
-        fitted = fit(cfg, data, train_rows, val_rows, best_epoch, f"fold {k + 1}/{cfg.folds} to the best epoch")
+        fitted = fit(cfg, data, train_rows, val_rows, best_epoch, f"fold {k + 1}/{cfg.folds} to the best epoch", init)
         _, cp[val_rows], loads[val_rows] = fitted.predict(data.cp[val_rows])
         fold[val_rows] = k
     return CrossValidation(best_epoch, mean, fold, cp, loads)
 
 
+def initial_model(cfg: AETrainConfig, data: AEData) -> TrainedAutoencoder:
+    """The saved model of cfg.init_from, checked against the config and the data it is to continue on."""
+    assert cfg.init_from is not None
+    init = load_autoencoder(cfg.init_from)
+    saved = json.loads((cfg.init_from / "config.json").read_text())
+    if init.load_heads != LOAD_HEADS:
+        raise ValueError(f"cannot continue from {cfg.init_from}: its load heads are {init.load_heads}, not {LOAD_HEADS}")
+    wanted = TapAutoencoder(data.cp.shape[1], cfg.latent_dim, cfg.hidden).state_dict()
+    if any(v.shape != wanted[k].shape for k, v in init.model.state_dict().items()):
+        raise ValueError(
+            f"cannot continue from {cfg.init_from}: it has {len(init.cp_scale.mean)} taps, latent_dim "
+            f"{saved.get('latent_dim')} and hidden {saved.get('hidden')}; here {data.cp.shape[1]} taps, latent_dim "
+            f"{cfg.latent_dim} and hidden {cfg.hidden}")
+    return init
+
+
 def train(cfg: AETrainConfig, data: AEData, root: Path = AE_RUNS_DIR) -> Path:
     """Cross-validate (if cfg.folds > 1), train the saved model on every run and save the run. Returns its folder."""
+    init = initial_model(cfg, data) if cfg.init_from else None
     run_dir = new_run_dir(root, cfg.name)
     atomic_write_text(run_dir / "config.json", cfg.model_dump_json(indent=2))
     n_params = sum(p.numel() for p in TapAutoencoder(data.cp.shape[1], cfg.latent_dim, cfg.hidden).parameters())
     print(f"RUN_DIR {run_dir}")
     print(f"{data.runs.height} runs, {data.cp.shape[1]} taps, latent {cfg.latent_dim}, {n_params} parameters, "
-          + (f"{cfg.folds}-fold cross-validation" if cfg.folds > 1 else "no validation"))
+          + (f"{cfg.folds}-fold cross-validation" if cfg.folds > 1 else "no validation")
+          + (f", continuing from {cfg.init_from}" if init else ""))
 
-    cv = cross_validate(cfg, data, run_dir) if cfg.folds > 1 else None
+    cv = cross_validate(cfg, data, run_dir, init) if cfg.folds > 1 else None
     every_run = torch.arange(data.runs.height)
-    final = fit(cfg, data, every_run, every_run[:0], cv.best_epoch if cv else cfg.epochs, "all runs")
+    final = fit(cfg, data, every_run, every_run[:0], cv.best_epoch if cv else cfg.epochs, "all runs", init)
     if cv is None:
         pl.DataFrame(final.history).write_csv(run_dir / "history.csv")
     save_autoencoder(run_dir / "model.pt", final.model, cfg, final.cp_scale, final.load_scale)

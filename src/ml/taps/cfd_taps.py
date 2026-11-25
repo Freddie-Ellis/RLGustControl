@@ -30,6 +30,7 @@ errors) and tap_selection.png. selections/taps.parquet is the layout in use and 
 
 import argparse
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
@@ -82,7 +83,7 @@ LEV_ETA_RANGE: tuple[float, float] = (0.5, 0.98)  # where to look, as a fraction
 # the suction hugs the leading edge
 LEV_TAPS_M: tuple[tuple[float, float], ...] | None = None  # (x, y) of starboard LEV taps placed by hand, y > 0,
 # mirrored to port; None brackets where the LEV_ALPHA_RANGE_DEG runs' suction peak moves (see lev_stations)
-GROUP_COLOURS: dict[str, str] = {"LEV": "orange", "greedy": "red", "uniform": "white"}
+GROUP_COLOURS: dict[str, str] = {"LEV": "orange", "greedy": "red", "actuator": "magenta", "uniform": "white"}
 
 # One folder per run of this script, named after its targets (see `selection_dir`). OUTPUT_DIR/taps.parquet is the
 # layout in use (the training scripts' default): a run never replaces it; copy a run's taps.parquet there to adopt it.
@@ -298,15 +299,18 @@ def folds(problem: TapProblem, n_folds: int = FOLDS, seed: int = SEED) -> list[t
     return pairs
 
 
-def cross_validated_curve(problem: TapProblem, lev: Tensor, n_folds: int = FOLDS) -> Tensor:
+def cross_validated_curve(problem: TapProblem, lev: Tensor, n_folds: int = FOLDS,
+                          choose: LayoutChooser | None = None) -> Tensor:
     """Held-out RMS error / training std against number of taps, in layout order (n_taps + 1, K), over every run.
 
-    Each fold chooses its own greedy and fill taps on the other runs (the LEV taps stay as given) and is scored on its
-    held-out runs; the folds' squared errors are pooled, weighted by their number of runs. This measures the layout
-    procedure on unseen runs, so a layout made on all runs should do slightly better."""
+    Each fold chooses its own taps after the LEV ones (which stay as given) on the other runs, with `choose` (default
+    `choose_layout`), and is scored on its held-out runs; the folds' squared errors are pooled, weighted by their
+    number of runs. This measures the layout procedure on unseen runs, so a layout made on all runs should do
+    slightly better."""
+    chooser: LayoutChooser = choose_layout if choose is None else choose
     curves, sizes = [], []
     for train, test in folds(problem, n_folds):
-        selection = choose_layout(train, lev).selection
+        selection = chooser(train, lev).selection
         curves.append(heldout_curve(selection, train.cp, train.targets, test.cp, test.targets, train.known, test.known))
         sizes.append(test.runs.height)
     length = min(len(c) for c in curves)  # a fold can stop early if its constraints run out of candidates
@@ -321,6 +325,14 @@ def cross_validated_curve(problem: TapProblem, lev: Tensor, n_folds: int = FOLDS
 class TapLayout:
     selection: TapSelection  # every tap, in layout order, with the estimator fitted on all of them
     groups: tuple[str, ...]  # which GROUP_COLOURS group each tap is in, in the same order
+
+    @property
+    def group_names(self) -> tuple[str, ...]:
+        """The groups this layout has, in layout order."""
+        return tuple(dict.fromkeys(self.groups))
+
+
+type LayoutChooser = Callable[[TapProblem, Tensor], TapLayout]  # (problem, LEV taps) -> the whole layout
 
 
 def lev_runs(runs: pl.DataFrame) -> list[int]:
@@ -431,7 +443,8 @@ def tap_table(problem: TapProblem, layout: TapLayout) -> pl.DataFrame:
 
 # ---- Report ---------------------------------------------------------------------------------------------------------
 
-def _planform(ax: Axes, problem: TapProblem, taps: pl.DataFrame, surface: int, title: str) -> None:
+def _planform(ax: Axes, problem: TapProblem, taps: pl.DataFrame, surface: int, title: str,
+              groups: tuple[str, ...]) -> None:
     """Candidates coloured by how much their Cp varies across runs, with the taps numbered in layout order and
     outlined in their group's colour."""
     on_surface = (problem.candidates["surface"] == surface).to_numpy()
@@ -441,7 +454,8 @@ def _planform(ax: Axes, problem: TapProblem, taps: pl.DataFrame, surface: int, t
     plt.colorbar(scatter, ax=ax, label="Cp std across runs")
     blocked = problem.no_tap.filter(pl.col("surface") == surface)  # the skin in a no-tap zone, in its own shape
     ax.scatter(blocked["y"], blocked["x"], s=2, color="0.55", label="no taps")
-    for group, colour in GROUP_COLOURS.items():
+    for group in groups:
+        colour = GROUP_COLOURS[group]
         picked = taps.filter(pl.col("surface") == surface, pl.col("group") == group)
         ax.scatter(picked["y"], picked["x"], s=30, facecolors="none", edgecolors=colour, linewidths=1.2,
                    label=f"{group} ({taps.filter(pl.col('group') == group).height})")
@@ -463,15 +477,15 @@ def plot_layout(problem: TapProblem, layout: TapLayout, path: Path, heldout: Ten
     selection = layout.selection
     taps = tap_table(problem, layout)
     fig, axes = plt.subplots(1, 3, figsize=(18, 7))
-    _planform(axes[0], problem, taps, UPPER, "Upper skin (seen from above)")
-    _planform(axes[1], problem, taps, LOWER, "Lower skin (seen from above)")
+    _planform(axes[0], problem, taps, UPPER, "Upper skin (seen from above)", layout.group_names)
+    _planform(axes[1], problem, taps, LOWER, "Lower skin (seen from above)", layout.group_names)
     for k, name in enumerate(problem.target_names):
         line, = axes[2].semilogy(selection.unexplained[:, k].numpy(), label=f"{name} training")
         if heldout is not None:
             # (RMS error / training std)^2 is the held-out counterpart of the training variance fraction
             axes[2].semilogy(heldout[:, k].pow(2).numpy(), "--", color=line.get_color(), label=f"{name} cross-validated")
     end = 0
-    for group in GROUP_COLOURS:
+    for group in layout.group_names:
         end += layout.groups.count(group)
         axes[2].axvline(end, color="0.5", linestyle=":", linewidth=1)
         axes[2].text(end, 1.0, f" {group} ", transform=axes[2].get_xaxis_transform(), ha="right", va="top", fontsize=8)
@@ -480,7 +494,7 @@ def plot_layout(problem: TapProblem, layout: TapLayout, path: Path, heldout: Ten
     axes[2].legend(loc="lower left")
     fig.tight_layout(rect=(0, 0, 1, 0.95))
     handles, labels = axes[0].get_legend_handles_labels()  # every group, even one with no tap on the upper skin
-    fig.legend(handles, labels, loc="upper center", ncols=len(GROUP_COLOURS), title="Tap groups (count)",
+    fig.legend(handles, labels, loc="upper center", ncols=len(handles), title="Tap groups (count)",
                facecolor="0.85")  # grey, as the planform backgrounds, so the white uniform marker shows
     fig.savefig(path, dpi=200)
     if show:
@@ -488,39 +502,49 @@ def plot_layout(problem: TapProblem, layout: TapLayout, path: Path, heldout: Ten
     plt.close(fig)
 
 
-def selection_dir(targets: tuple[str, ...], root: Path = OUTPUT_DIR) -> Path:
-    """root/<YYYYmmdd-HHMMSS>_<targets joined by +>, e.g. selections/20261125-150212_C_L+C_m+C_l, created."""
-    folder = root / f"{datetime.now():%Y%m%d-%H%M%S}_{'+'.join(targets)}"
+def selection_dir(targets: tuple[str, ...], tag: str = "", root: Path = OUTPUT_DIR) -> Path:
+    """root/<YYYYmmdd-HHMMSS>_<targets joined by +>[_<tag>], e.g. selections/20261125-150212_C_L+C_m+C_l, created."""
+    folder = root / f"{datetime.now():%Y%m%d-%H%M%S}_{'+'.join(targets)}{f'_{tag}' if tag else ''}"
     folder.mkdir(parents=True)
     return folder
 
 
-def main(targets: tuple[str, ...] = TARGETS, show: bool = False) -> Path:
-    """Build the layout for `targets` on every run, cross-validate it, and save it in a new folder of OUTPUT_DIR:
-    taps.parquet and taps.csv (the layout), summary.json (the settings and the cross-validated errors after each
-    group) and tap_selection.png. Never replaces OUTPUT_DIR/taps.parquet, the layout in use. Returns the folder."""
+@dataclass(frozen=True)
+class SelectionRun:
+    folder: Path  # where it was saved
+    problem: TapProblem
+    layout: TapLayout
+    taps: pl.DataFrame  # tap_table of the layout
+
+
+def run_selection(targets: tuple[str, ...] = TARGETS, choose: LayoutChooser = choose_layout, tag: str = "",
+                  show: bool = False) -> SelectionRun:
+    """Build the layout for `targets` on every run with `choose`, cross-validate the procedure, and save it in a new
+    folder of OUTPUT_DIR (`selection_dir`, with `tag` in its name): taps.parquet and taps.csv (the layout),
+    summary.json (the settings and the cross-validated errors after each group) and tap_selection.png. Never replaces
+    OUTPUT_DIR/taps.parquet, the layout in use."""
     problem = tap_problem(targets=targets)
     print(
         f"{problem.runs.height} runs, {problem.candidates.height} candidates, "
         f"targets {problem.target_names}, known {problem.known_names}"
     )
     lev = lev_taps(problem)
-    layout = choose_layout(problem, lev)  # the layout to build: every run, for full coverage
+    layout = choose(problem, lev)  # the layout to build: every run, for full coverage
     taps = tap_table(problem, layout)
     with pl.Config(tbl_rows=-1):
         print(taps)
-    heldout = cross_validated_curve(problem, lev)
+    heldout = cross_validated_curve(problem, lev, choose=choose)
     errors: dict[str, dict[str, float]] = {}
     for k, name in enumerate(problem.target_names):
         end = 0
         errors[name] = {}
-        for group in GROUP_COLOURS:
+        for group in layout.group_names:
             end += layout.groups.count(group)
             errors[name][f"after_{group}_{end}_taps"] = float(heldout[end, k])
             print(f"{name} {FOLDS}-fold cross-validated RMS error / training std after the {group} taps "
                   f"({end} taps): {heldout[end, k]:.3f}")
 
-    folder = selection_dir(problem.target_names)
+    folder = selection_dir(problem.target_names, tag)
     taps.write_parquet(folder / "taps.parquet")
     taps.write_csv(folder / "taps.csv")
     atomic_write_text(folder / "summary.json", json.dumps({
@@ -528,13 +552,18 @@ def main(targets: tuple[str, ...] = TARGETS, show: bool = False) -> Path:
         "known": list(problem.known_names),
         "n_runs": problem.runs.height,
         "n_candidates": problem.candidates.height,
-        "groups": {group: layout.groups.count(group) for group in GROUP_COLOURS},
+        "groups": {group: layout.groups.count(group) for group in layout.group_names},
         "folds": FOLDS,
         "cross_validated_rms_error_over_std": errors,
     }, indent=2))
     plot_layout(problem, layout, folder / "tap_selection.png", heldout, show)
     print(f"saved {folder}")
-    return folder
+    return SelectionRun(folder, problem, layout, taps)
+
+
+def main(targets: tuple[str, ...] = TARGETS, show: bool = False) -> Path:
+    """LEV, greedy and uniform taps (`choose_layout`) for `targets`, saved by `run_selection`. Returns the folder."""
+    return run_selection(targets, choose_layout, show=show).folder
 
 
 if __name__ == "__main__":

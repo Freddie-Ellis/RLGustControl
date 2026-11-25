@@ -224,15 +224,20 @@ def main(taps_file: Path = TAPS_FILE, data_dir: Path = CFD_DATA_DIR) -> None:
     if not bool(covered.all()):
         raise ValueError(f"taps {(~covered).nonzero().squeeze(1).tolist()} are not on every run's surface")
     print(f"{runs.height} runs, {taps.height} taps from {taps_file}, sensor noise {SENSOR_NOISE_CP} Cp")
+    report(taps, runs, tap_cp, taps_file.parent)  # next to the layout it describes, e.g. that selection run's folder
 
+
+def report(taps: pl.DataFrame, runs: pl.DataFrame, tap_cp: Tensor, folder: Path) -> pl.DataFrame:
+    """The observability table of `taps` (Cp at them per run: tap_cp, N x n_taps), printed and saved in `folder` with
+    both plots. Returns the table."""
     table, change, significant = observability(taps, runs, tap_cp)
     with pl.Config(tbl_rows=-1, tbl_cols=-1, float_precision=3, tbl_width_chars=200):
         print(table)
-    folder = taps_file.parent  # next to the layout it describes, e.g. that selection run's folder
     table.write_csv(folder / "actuator_observability.csv")
     print(f"saved {folder / 'actuator_observability.csv'}")
     print(f"saved {plot_r2(table, folder)}")
     print(f"saved {plot_signal(taps, table, change, significant, GeometryConfig.from_toml(GEOMETRY_FILE), folder)}")
+    return table
 
 
 if __name__ == "__main__":

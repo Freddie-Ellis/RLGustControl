@@ -15,7 +15,8 @@ from torch import Tensor, nn
 LATENT_DIM = 6  # size of E's latent; plan's starting guess 3 to 8
 K_TAPS = 10  # taps kept at deployment; plan's starting guess 8 to 12, chosen at the knee of error against k
 HISTORY_FRAMES = 4  # recent frames g sees, because pressure depends on history (hysteresis, unsteady effects)
-LOAD_HEADS = ("C_l", "C_m")  # coefficients the autoencoder's auxiliary heads predict from the latent
+LOAD_HEADS = ("C_L", "C_m", "C_l")  # coefficients the autoencoder's auxiliary heads predict from the latent: lift,
+# pitch and roll, the loads the controller is to hold at a target
 AE_HIDDEN = 64  # width of the autoencoder's encoder and decoder layers
 G_HIDDEN = 128  # width of g's layers
 

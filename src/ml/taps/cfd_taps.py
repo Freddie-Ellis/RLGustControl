@@ -5,7 +5,7 @@ Turns runs.parquet and the per-run surface tables into the inputs of `select_tap
   lower skin, thinned to one per `CANDIDATE_SPACING_M` square in planform;
 - cp (runs, candidates): every run's Cp interpolated from its own batch's mesh onto the candidates. Candidates that
   are not on every mesh's skin (e.g. opened up by a deflected surface) are dropped;
-- targets: the moment coefficients the controller has to hold;
+- targets: the coefficients the controller has to hold at a target (TARGETS: lift, pitch and roll);
 - known: the control-surface deflections, which the controller sets itself (only those that vary across runs).
 
 The layout is built in three groups, in this order:
@@ -44,7 +44,8 @@ from src.ml.taps.tap_selection import (
 )
 
 TAP_PATCH: str = "main_body"  # the only patch that never moves
-TARGETS: tuple[str, ...] = ("C_m",)  # pitch moment coefficients
+TARGETS: tuple[str, ...] = ("C_L", "C_m", "C_l")  # lift, pitch and roll: what the controller is to hold at a target;
+# the greedy taps weight each equally, after scaling it by its variance across the runs
 DEFLECTIONS: str = r"^deflection_.*_deg$"  # runs.parquet columns of the known inputs
 UPPER: int = 0
 LOWER: int = 1

@@ -3,6 +3,7 @@
     python -m src.ml.taps.actuator_taps                            targets from cfd_taps.TARGETS
     python -m src.ml.taps.actuator_taps --targets C_m              pitch only
     python -m src.ml.taps.actuator_taps --n-actuator 8 --show      a smaller actuator group (the rest uniform)
+    python -m src.ml.taps.actuator_taps --ignore-zones behind_splitters   where taps would go without that zone
 
 The layout is built as in src/ml/taps/cfd_taps.py up to its greedy taps, then:
 - LEV: N_LEV_STATIONS rows along the leading-edge vortex footprints (as cfd_taps);
@@ -31,6 +32,7 @@ from src.ml.taps.cfd_taps import (
     TARGETS,
     TapLayout,
     TapProblem,
+    add_zone_argument,
     run_selection,
 )
 from src.ml.taps.tap_selection import N_TAPS, farthest_point_fill, select_taps
@@ -65,11 +67,12 @@ def choose_actuator_layout(problem: TapProblem, lev: Tensor, n_greedy: int = N_G
     return TapLayout(selection=selection, groups=groups)
 
 
-def main(targets: tuple[str, ...] = TARGETS, n_actuator: int = N_ACTUATOR_TAPS, show: bool = False) -> None:
+def main(targets: tuple[str, ...] = TARGETS, n_actuator: int = N_ACTUATOR_TAPS, show: bool = False,
+         ignore_zones: frozenset[str] = frozenset()) -> None:
     def choose(problem: TapProblem, lev: Tensor) -> TapLayout:
         return choose_actuator_layout(problem, lev, n_actuator=n_actuator)
 
-    run = run_selection(targets, choose, tag="actuators", show=show)
+    run = run_selection(targets, choose, tag="actuators", show=show, ignore_zones=ignore_zones)
     print("\nHow well the new layout sees each actuator:")
     actuator_observability.report(run.taps, run.problem.runs, run.problem.cp[:, run.layout.selection.taps],
                                   run.folder)
@@ -84,5 +87,6 @@ if __name__ == "__main__":
                         help=f"taps in the actuator group (default {N_ACTUATOR_TAPS}); any left of the {N_TAPS} are "
                              "spread evenly")
     parser.add_argument("--show", action="store_true", help="also open the layout figure")
+    add_zone_argument(parser)
     args = parser.parse_args()
-    main(tuple(args.targets), args.n_actuator, args.show)
+    main(tuple(args.targets), args.n_actuator, args.show, frozenset(args.ignore_zones))

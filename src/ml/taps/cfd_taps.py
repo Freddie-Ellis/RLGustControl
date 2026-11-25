@@ -23,6 +23,7 @@ cross-validation, and save it all in a new folder named after the targets:
     python -m src.ml.taps.cfd_taps                          TARGETS -> selections/<YYYYmmdd-HHMMSS>_C_L+C_m+C_l/
     python -m src.ml.taps.cfd_taps --targets C_m            pitch only -> selections/<YYYYmmdd-HHMMSS>_C_m/
     python -m src.ml.taps.cfd_taps --targets C_L C_m --show  also open the figure
+    python -m src.ml.taps.cfd_taps --ignore-zones behind_splitters   lift a no-tap zone -> ..._no-behind_splitters/
 
 Each folder holds taps.parquet and taps.csv (the layout), summary.json (targets, group sizes and the cross-validated
 errors) and tap_selection.png. selections/taps.parquet is the layout in use and is never replaced by a run.
@@ -131,17 +132,23 @@ class NoTapZone:
     x: tuple[float, float]
 
 
-def no_tap_zones() -> list[NoTapZone]:
+def no_tap_zones(ignore: frozenset[str] = frozenset()) -> list[NoTapZone]:
     """The fuselage, the apex beside it, and the main body further than the allowed distance behind the split flaps
-    (from CONFIG.rig)."""
+    (from CONFIG.rig), less any named in `ignore` (to see where taps would go without that restriction)."""
     rig = CONFIG.rig
     inf = float("inf")
-    return [
+    zones = [
         NoTapZone("fuselage", (0.0, rig.fuselage_half_width_m), (-inf, inf)),
         NoTapZone("apex", (rig.fuselage_half_width_m, inf), (-inf, rig.apex_no_tap_x_m)),
-        NoTapZone("behind splitters", rig.splitter_span_m,
+        NoTapZone("behind_splitters", rig.splitter_span_m,
                   (rig.splitter_trailing_edge_x_m + rig.max_tap_behind_splitter_m, inf)),
     ]
+    if unknown := ignore - {z.name for z in zones}:
+        raise ValueError(f"no no-tap zones called {sorted(unknown)}; they are {[z.name for z in zones]}")
+    return [z for z in zones if z.name not in ignore]
+
+
+ZONE_NAMES: tuple[str, ...] = tuple(z.name for z in no_tap_zones())
 
 
 def tap_allowed(zones: list[NoTapZone]) -> pl.Expr:
@@ -151,16 +158,18 @@ def tap_allowed(zones: list[NoTapZone]) -> pl.Expr:
     return ~pl.any_horizontal(inside)
 
 
-def candidate_points(reference: pl.DataFrame, spacing: float = CANDIDATE_SPACING_M) -> pl.DataFrame:
+def candidate_points(reference: pl.DataFrame, zones: list[NoTapZone], spacing: float = CANDIDATE_SPACING_M
+                     ) -> pl.DataFrame:
     """One face per `spacing` square in planform (x, y) on each skin: the one nearest the square's centre. None in
-    a `no_tap_zones` zone."""
-    return _one_per_square(reference.filter(tap_allowed(no_tap_zones())), spacing)
+    one of `zones` (normally `no_tap_zones()`)."""
+    return _one_per_square(reference.filter(tap_allowed(zones)), spacing)
 
 
-def no_tap_points(reference: pl.DataFrame, spacing: float = CANDIDATE_SPACING_M) -> pl.DataFrame:
-    """`candidate_points`' squares that lie in a `no_tap_zones` zone instead (x, y, surface): where the plots show
-    the skin with no taps allowed."""
-    return _one_per_square(reference.filter(~tap_allowed(no_tap_zones())), spacing).select("x", "y", "surface")
+def no_tap_points(reference: pl.DataFrame, zones: list[NoTapZone], spacing: float = CANDIDATE_SPACING_M
+                  ) -> pl.DataFrame:
+    """`candidate_points`' squares that lie in one of `zones` instead (x, y, surface): where the plots show the skin
+    with no taps allowed."""
+    return _one_per_square(reference.filter(~tap_allowed(zones)), spacing).select("x", "y", "surface")
 
 
 def _one_per_square(faces: pl.DataFrame, spacing: float) -> pl.DataFrame:
@@ -264,10 +273,13 @@ class TapProblem:
         )
 
 
-def tap_problem(data_dir: Path = CFD_DATA_DIR, targets: tuple[str, ...] = TARGETS) -> TapProblem:
+def tap_problem(data_dir: Path = CFD_DATA_DIR, targets: tuple[str, ...] = TARGETS,
+                ignore_zones: frozenset[str] = frozenset()) -> TapProblem:
+    """The selection problem on every run, with candidates outside the no-tap zones less `ignore_zones`."""
     runs = load_runs(data_dir)
     reference = skin(reference_run(runs), data_dir)
-    candidates = candidate_points(reference)
+    zones = no_tap_zones(ignore_zones)
+    candidates = candidate_points(reference, zones)
     cp, covered = candidate_cp(runs, candidates, data_dir)
     if n_dropped := int((~covered).sum()):
         print(f"dropping {n_dropped} of {len(covered)} candidates that are not on every run's skin")
@@ -282,7 +294,7 @@ def tap_problem(data_dir: Path = CFD_DATA_DIR, targets: tuple[str, ...] = TARGET
         known=runs.select(known_names).to_torch(dtype=pl.Float64) if known_names else None,
         target_names=targets,
         known_names=known_names,
-        no_tap=no_tap_points(reference),
+        no_tap=no_tap_points(reference, zones),
     )
 
 
@@ -518,12 +530,16 @@ class SelectionRun:
 
 
 def run_selection(targets: tuple[str, ...] = TARGETS, choose: LayoutChooser = choose_layout, tag: str = "",
-                  show: bool = False) -> SelectionRun:
+                  show: bool = False, ignore_zones: frozenset[str] = frozenset()) -> SelectionRun:
     """Build the layout for `targets` on every run with `choose`, cross-validate the procedure, and save it in a new
     folder of OUTPUT_DIR (`selection_dir`, with `tag` in its name): taps.parquet and taps.csv (the layout),
     summary.json (the settings and the cross-validated errors after each group) and tap_selection.png. Never replaces
-    OUTPUT_DIR/taps.parquet, the layout in use."""
-    problem = tap_problem(targets=targets)
+    OUTPUT_DIR/taps.parquet, the layout in use.
+
+    `ignore_zones` lifts those no-tap zones, to see where taps would go without them; the folder name then ends in
+    _no-<zone> for each."""
+    problem = tap_problem(targets=targets, ignore_zones=ignore_zones)
+    tag = "_".join([*([tag] if tag else []), *(f"no-{z}" for z in sorted(ignore_zones))])
     print(
         f"{problem.runs.height} runs, {problem.candidates.height} candidates, "
         f"targets {problem.target_names}, known {problem.known_names}"
@@ -552,6 +568,7 @@ def run_selection(targets: tuple[str, ...] = TARGETS, choose: LayoutChooser = ch
         "known": list(problem.known_names),
         "n_runs": problem.runs.height,
         "n_candidates": problem.candidates.height,
+        "ignored_no_tap_zones": sorted(ignore_zones),
         "groups": {group: layout.groups.count(group) for group in layout.group_names},
         "folds": FOLDS,
         "cross_validated_rms_error_over_std": errors,
@@ -561,9 +578,15 @@ def run_selection(targets: tuple[str, ...] = TARGETS, choose: LayoutChooser = ch
     return SelectionRun(folder, problem, layout, taps)
 
 
-def main(targets: tuple[str, ...] = TARGETS, show: bool = False) -> Path:
+def main(targets: tuple[str, ...] = TARGETS, show: bool = False, ignore_zones: frozenset[str] = frozenset()) -> Path:
     """LEV, greedy and uniform taps (`choose_layout`) for `targets`, saved by `run_selection`. Returns the folder."""
-    return run_selection(targets, choose_layout, show=show).folder
+    return run_selection(targets, choose_layout, show=show, ignore_zones=ignore_zones).folder
+
+
+def add_zone_argument(parser: argparse.ArgumentParser) -> None:
+    """--ignore-zones, shared by the tap selection scripts."""
+    parser.add_argument("--ignore-zones", nargs="+", default=[], choices=ZONE_NAMES, metavar="ZONE",
+                        help=f"lift these no-tap zones to see where taps would go without them ({', '.join(ZONE_NAMES)})")
 
 
 if __name__ == "__main__":
@@ -572,5 +595,6 @@ if __name__ == "__main__":
     parser.add_argument("--targets", nargs="+", default=list(TARGETS),
                         help=f"runs.parquet coefficients the layout is chosen for (default: {' '.join(TARGETS)})")
     parser.add_argument("--show", action="store_true", help="also open the figure")
+    add_zone_argument(parser)
     args = parser.parse_args()
-    main(tuple(args.targets), args.show)
+    main(tuple(args.targets), args.show, frozenset(args.ignore_zones))

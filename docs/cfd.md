@@ -41,6 +41,8 @@ waits on the mesh choice. Collecting results into a dataset is planned.
 | `postpro/convergence.py` | Convergence table (iterations, gap from the running mean, final ranges and residuals); coefficient and residual histories |
 | `postpro/pressure.py` | Cp along chordwise cuts at spanwise stations, overlaid across runs, with the RMS difference from the last run |
 | `postpro/boundary_layer.py` | y⁺ per patch and by area, prism-layer coverage, and skin friction along cuts against flat-plate correlations |
+| `postpro/surfaces.py` | Control surface loads from `setpoints.parquet`: clean-wing load breakdown and sideslip derivatives by part, each surface's own loads and hinge moments, and each control's change to the aircraft's coefficients |
+| `postpro/authority.py` | Control authority from `setpoints.parquet`: whether control effects add (all surfaces together, both sides against one side), the change in C_L, C_m, C_l and C_n each surface type reaches, and the largest upward gust that holds C_L or C_m and side gust that holds C_l or C_n |
 | `postpro/common.py` | Shared loading: run folders, `results.json`, the wall-surface VTK files, surface cuts |
 
 | HPC file | Purpose |

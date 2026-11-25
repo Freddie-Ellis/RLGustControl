@@ -1,4 +1,4 @@
-name = "ae_cfd"
+name = "ae_cfd_test"
 seed = 0
 
 # Network (defaults in src/ml/ae/sparse_latent.py)

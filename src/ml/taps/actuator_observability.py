@@ -1,7 +1,7 @@
 """How well a tap layout sees each control surface: can the actuators' effects be observed from the chosen taps?
 
-    python -m src.ml.taps.actuator_observability                  the saved layout (selections/taps.parquet)
-    python -m src.ml.taps.actuator_observability <taps.parquet>   another layout
+    python -m src.ml.taps.actuator_observability                  the layout in use (selections/taps.parquet)
+    python -m src.ml.taps.actuator_observability selections/<run>/taps.parquet   a layout from one selection run
 
 For every actuator varied in the CFD runs (`DEFLECTIONS` columns of runs.parquet), on the runs of `load_runs`:
     seen_alone_r2         cross-validated R^2 of a linear estimate of its deflection from Cp at every tap, with
@@ -23,8 +23,8 @@ The all-tap estimates fit 48 taps to ~120 runs, so they are ridge-regularised; e
 from RIDGE_GRID_CP by a cross-validation of its own training runs (nested), so the R^2 stays an honest held-out score.
 A single tap cannot overfit and uses the sensor noise as its ridge, as the tap selection does.
 
-Writes selections/actuator_observability.csv, plots/actuator_observability.png (the R^2 of every actuator) and
-plots/actuator_signal.png (per actuator, the Cp change over its travel at each tap it clearly changes, on the planform,
+Writes, next to the layout file: actuator_observability.csv, actuator_observability.png (the R^2 of every actuator)
+and actuator_signal.png (per actuator, the Cp change over its travel at each tap it clearly changes, on the planform,
 with its hinge line).
 """
 
@@ -40,7 +40,7 @@ from torch import Tensor
 from src.cfd.geometry import GeometryConfig
 from src.config import CONFIG
 from src.data.cfd import CFD_DATA_DIR
-from src.ml.taps.cfd_taps import DEFLECTIONS, FOLDS, LOWER, OUTPUT_DIR, PLOTS_DIR, SEED, UPPER, candidate_cp, load_runs
+from src.ml.taps.cfd_taps import DEFLECTIONS, FOLDS, LOWER, OUTPUT_DIR, SEED, UPPER, candidate_cp, load_runs
 from src.ml.taps.tap_selection import SENSOR_NOISE_CP, fit_estimator
 
 TAPS_FILE: Path = OUTPUT_DIR / "taps.parquet"
@@ -154,7 +154,7 @@ def observability(taps: pl.DataFrame, runs: pl.DataFrame, tap_cp: Tensor) -> tup
     return pl.DataFrame(rows), change, significant
 
 
-def plot_r2(table: pl.DataFrame) -> Path:
+def plot_r2(table: pl.DataFrame, folder: Path) -> Path:
     fig, ax = plt.subplots(figsize=(11, 4.5))
     x = torch.arange(table.height).numpy()
     for offset, column, label in [(-0.27, "seen_alone_r2", "all taps, nothing else known"),
@@ -168,13 +168,14 @@ def plot_r2(table: pl.DataFrame) -> Path:
     ax.legend(fontsize=8, loc="upper left")
     ax.grid(axis="y", alpha=0.3)
     fig.tight_layout()
-    path = PLOTS_DIR / "actuator_observability.png"
+    path = folder / "actuator_observability.png"
     fig.savefig(path, dpi=200)
+    plt.close(fig)
     return path
 
 
 def plot_signal(taps: pl.DataFrame, table: pl.DataFrame, change: Tensor, significant: Tensor,
-                geometry: GeometryConfig) -> Path:
+                geometry: GeometryConfig, folder: Path) -> Path:
     """Per actuator: the Cp change over its travel at each tap it clearly changes (filled, log colour scale from the
     sensor noise up), the other taps hollow; upper skin circles, lower skin squares; its hinge line and best tap."""
     cols = 4
@@ -210,8 +211,9 @@ def plot_signal(taps: pl.DataFrame, table: pl.DataFrame, change: Tensor, signifi
         fig.colorbar(points, ax=axes, shrink=0.6, label="Cp change over the travel (from the sensor noise up)")
     fig.suptitle("What each actuator does at each tap. Filled: clearly changed (hollow: not), circle: upper skin, "
                  "square: lower skin, blue: hinge line, green ring: best single tap")
-    path = PLOTS_DIR / "actuator_signal.png"
+    path = folder / "actuator_signal.png"
     fig.savefig(path, dpi=200)
+    plt.close(fig)
     return path
 
 
@@ -226,12 +228,11 @@ def main(taps_file: Path = TAPS_FILE, data_dir: Path = CFD_DATA_DIR) -> None:
     table, change, significant = observability(taps, runs, tap_cp)
     with pl.Config(tbl_rows=-1, tbl_cols=-1, float_precision=3, tbl_width_chars=200):
         print(table)
-    OUTPUT_DIR.mkdir(exist_ok=True)
-    PLOTS_DIR.mkdir(exist_ok=True)
-    table.write_csv(OUTPUT_DIR / "actuator_observability.csv")
-    print(f"saved {OUTPUT_DIR / 'actuator_observability.csv'}")
-    print(f"saved {plot_r2(table)}")
-    print(f"saved {plot_signal(taps, table, change, significant, GeometryConfig.from_toml(GEOMETRY_FILE))}")
+    folder = taps_file.parent  # next to the layout it describes, e.g. that selection run's folder
+    table.write_csv(folder / "actuator_observability.csv")
+    print(f"saved {folder / 'actuator_observability.csv'}")
+    print(f"saved {plot_r2(table, folder)}")
+    print(f"saved {plot_signal(taps, table, change, significant, GeometryConfig.from_toml(GEOMETRY_FILE), folder)}")
 
 
 if __name__ == "__main__":

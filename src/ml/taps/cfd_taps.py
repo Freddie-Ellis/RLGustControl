@@ -18,21 +18,31 @@ Every group is placed in mirror pairs (y -> -y), so the layout is symmetric like
 are mirrored; the runs are used as solved.
 
 Run as a script to build the layout on every run, estimate how well it explains each target on unseen runs by k-fold
-cross-validation, and save the layout and a plot.
+cross-validation, and save it all in a new folder named after the targets:
+
+    python -m src.ml.taps.cfd_taps                          TARGETS -> selections/<YYYYmmdd-HHMMSS>_C_L+C_m+C_l/
+    python -m src.ml.taps.cfd_taps --targets C_m            pitch only -> selections/<YYYYmmdd-HHMMSS>_C_m/
+    python -m src.ml.taps.cfd_taps --targets C_L C_m --show  also open the figure
+
+Each folder holds taps.parquet and taps.csv (the layout), summary.json (targets, group sizes and the cross-validated
+errors) and tap_selection.png. selections/taps.parquet is the layout in use and is never replaced by a run.
 """
 
+import argparse
+import json
 from dataclasses import dataclass, replace
+from datetime import datetime
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import polars as pl
 import torch
 from matplotlib.axes import Axes
-from matplotlib.patches import Rectangle
 from torch import Tensor
 
 from src.config import CONFIG
 from src.data.cfd import CFD_DATA_DIR, RUNS_FILE, surface_file
+from src.ml.atomic import atomic_write_text
 from src.ml.taps.tap_selection import (
     N_TAPS,
     CandidatePoints,
@@ -74,8 +84,9 @@ LEV_TAPS_M: tuple[tuple[float, float], ...] | None = None  # (x, y) of starboard
 # mirrored to port; None brackets where the LEV_ALPHA_RANGE_DEG runs' suction peak moves (see lev_stations)
 GROUP_COLOURS: dict[str, str] = {"LEV": "orange", "greedy": "red", "uniform": "white"}
 
+# One folder per run of this script, named after its targets (see `selection_dir`). OUTPUT_DIR/taps.parquet is the
+# layout in use (the training scripts' default): a run never replaces it; copy a run's taps.parquet there to adopt it.
 OUTPUT_DIR: Path = Path(__file__).parent / "selections"
-PLOTS_DIR: Path = Path(__file__).parent / "plots"
 
 
 # ---- Dataset -> selection problem -----------------------------------------------------------------------------------
@@ -120,11 +131,13 @@ class NoTapZone:
 
 
 def no_tap_zones() -> list[NoTapZone]:
-    """The fuselage, and the main body further than the allowed distance behind the split flaps (from CONFIG.rig)."""
+    """The fuselage, the apex beside it, and the main body further than the allowed distance behind the split flaps
+    (from CONFIG.rig)."""
     rig = CONFIG.rig
     inf = float("inf")
     return [
         NoTapZone("fuselage", (0.0, rig.fuselage_half_width_m), (-inf, inf)),
+        NoTapZone("apex", (rig.fuselage_half_width_m, inf), (-inf, rig.apex_no_tap_x_m)),
         NoTapZone("behind splitters", rig.splitter_span_m,
                   (rig.splitter_trailing_edge_x_m + rig.max_tap_behind_splitter_m, inf)),
     ]
@@ -140,8 +153,17 @@ def tap_allowed(zones: list[NoTapZone]) -> pl.Expr:
 def candidate_points(reference: pl.DataFrame, spacing: float = CANDIDATE_SPACING_M) -> pl.DataFrame:
     """One face per `spacing` square in planform (x, y) on each skin: the one nearest the square's centre. None in
     a `no_tap_zones` zone."""
-    cells = reference.filter(tap_allowed(no_tap_zones())).with_columns(
-        (pl.col(c) / spacing).floor().alias(f"cell_{c}") for c in ("x", "y"))
+    return _one_per_square(reference.filter(tap_allowed(no_tap_zones())), spacing)
+
+
+def no_tap_points(reference: pl.DataFrame, spacing: float = CANDIDATE_SPACING_M) -> pl.DataFrame:
+    """`candidate_points`' squares that lie in a `no_tap_zones` zone instead (x, y, surface): where the plots show
+    the skin with no taps allowed."""
+    return _one_per_square(reference.filter(~tap_allowed(no_tap_zones())), spacing).select("x", "y", "surface")
+
+
+def _one_per_square(faces: pl.DataFrame, spacing: float) -> pl.DataFrame:
+    cells = faces.with_columns((pl.col(c) / spacing).floor().alias(f"cell_{c}") for c in ("x", "y"))
     off_centre = sum(((pl.col(c) / spacing) - pl.col(f"cell_{c}") - 0.5) ** 2 for c in ("x", "y"))
     return (
         cells.sort(off_centre)
@@ -224,6 +246,7 @@ class TapProblem:
     known: Tensor | None  # (N, J), None if no known input varies
     target_names: tuple[str, ...]
     known_names: tuple[str, ...]
+    no_tap: pl.DataFrame  # x, y, surface of the skin in a no-tap zone, for the plots
 
     @property
     def points(self) -> CandidatePoints:
@@ -242,7 +265,8 @@ class TapProblem:
 
 def tap_problem(data_dir: Path = CFD_DATA_DIR, targets: tuple[str, ...] = TARGETS) -> TapProblem:
     runs = load_runs(data_dir)
-    candidates = candidate_points(skin(reference_run(runs), data_dir))
+    reference = skin(reference_run(runs), data_dir)
+    candidates = candidate_points(reference)
     cp, covered = candidate_cp(runs, candidates, data_dir)
     if n_dropped := int((~covered).sum()):
         print(f"dropping {n_dropped} of {len(covered)} candidates that are not on every run's skin")
@@ -257,6 +281,7 @@ def tap_problem(data_dir: Path = CFD_DATA_DIR, targets: tuple[str, ...] = TARGET
         known=runs.select(known_names).to_torch(dtype=pl.Float64) if known_names else None,
         target_names=targets,
         known_names=known_names,
+        no_tap=no_tap_points(reference),
     )
 
 
@@ -414,14 +439,8 @@ def _planform(ax: Axes, problem: TapProblem, taps: pl.DataFrame, surface: int, t
     xy = problem.candidates.filter(pl.Series(on_surface))
     scatter = ax.scatter(xy["y"], xy["x"], c=spread, s=2, cmap="viridis")
     plt.colorbar(scatter, ax=ax, label="Cp std across runs")
-    xs = xy["x"].to_numpy()
-    x_lo, x_hi = float(xs.min()), float(xs.max())  # clip the open-ended zones to the wing
-    for i, zone in enumerate(no_tap_zones()):
-        x0, x1 = max(zone.x[0], x_lo), min(zone.x[1], x_hi)
-        y0, y1 = zone.abs_y
-        for lo, hi in ((y0, y1), (-y1, -y0)):
-            ax.add_patch(Rectangle((lo, x0), hi - lo, x1 - x0, facecolor="0.6", hatch="//", edgecolor="0.4",
-                                   linewidth=0, label="no taps" if i == 0 and lo >= 0 else None))
+    blocked = problem.no_tap.filter(pl.col("surface") == surface)  # the skin in a no-tap zone, in its own shape
+    ax.scatter(blocked["y"], blocked["x"], s=2, color="0.55", label="no taps")
     for group, colour in GROUP_COLOURS.items():
         picked = taps.filter(pl.col("surface") == surface, pl.col("group") == group)
         ax.scatter(picked["y"], picked["x"], s=30, facecolors="none", edgecolors=colour, linewidths=1.2,
@@ -436,10 +455,11 @@ def _planform(ax: Axes, problem: TapProblem, taps: pl.DataFrame, surface: int, t
     ax.set_title(title)
 
 
-def plot_layout(problem: TapProblem, layout: TapLayout, heldout: Tensor | None = None) -> None:
+def plot_layout(problem: TapProblem, layout: TapLayout, path: Path, heldout: Tensor | None = None,
+                show: bool = False) -> None:
     """Tap layout on both skins, and the unexplained target variance against number of taps in layout order: on the
     runs the layout was made on and, if `heldout` (held-out RMS error / training std per tap count) is given, on
-    unseen runs. Dotted lines mark where each group of taps ends."""
+    unseen runs. Dotted lines mark where each group of taps ends. Saved to `path`."""
     selection = layout.selection
     taps = tap_table(problem, layout)
     fig, axes = plt.subplots(1, 3, figsize=(18, 7))
@@ -462,13 +482,24 @@ def plot_layout(problem: TapProblem, layout: TapLayout, heldout: Tensor | None =
     handles, labels = axes[0].get_legend_handles_labels()  # every group, even one with no tap on the upper skin
     fig.legend(handles, labels, loc="upper center", ncols=len(GROUP_COLOURS), title="Tap groups (count)",
                facecolor="0.85")  # grey, as the planform backgrounds, so the white uniform marker shows
-    PLOTS_DIR.mkdir(exist_ok=True)
-    fig.savefig(PLOTS_DIR / "tap_selection.png", dpi=200)
-    plt.show()
+    fig.savefig(path, dpi=200)
+    if show:
+        plt.show()
+    plt.close(fig)
 
 
-def main() -> None:
-    problem = tap_problem()
+def selection_dir(targets: tuple[str, ...], root: Path = OUTPUT_DIR) -> Path:
+    """root/<YYYYmmdd-HHMMSS>_<targets joined by +>, e.g. selections/20261125-150212_C_L+C_m+C_l, created."""
+    folder = root / f"{datetime.now():%Y%m%d-%H%M%S}_{'+'.join(targets)}"
+    folder.mkdir(parents=True)
+    return folder
+
+
+def main(targets: tuple[str, ...] = TARGETS, show: bool = False) -> Path:
+    """Build the layout for `targets` on every run, cross-validate it, and save it in a new folder of OUTPUT_DIR:
+    taps.parquet and taps.csv (the layout), summary.json (the settings and the cross-validated errors after each
+    group) and tap_selection.png. Never replaces OUTPUT_DIR/taps.parquet, the layout in use. Returns the folder."""
+    problem = tap_problem(targets=targets)
     print(
         f"{problem.runs.height} runs, {problem.candidates.height} candidates, "
         f"targets {problem.target_names}, known {problem.known_names}"
@@ -479,16 +510,38 @@ def main() -> None:
     with pl.Config(tbl_rows=-1):
         print(taps)
     heldout = cross_validated_curve(problem, lev)
+    errors: dict[str, dict[str, float]] = {}
     for k, name in enumerate(problem.target_names):
         end = 0
+        errors[name] = {}
         for group in GROUP_COLOURS:
             end += layout.groups.count(group)
+            errors[name][f"after_{group}_{end}_taps"] = float(heldout[end, k])
             print(f"{name} {FOLDS}-fold cross-validated RMS error / training std after the {group} taps "
                   f"({end} taps): {heldout[end, k]:.3f}")
-    OUTPUT_DIR.mkdir(exist_ok=True)
-    taps.write_parquet(OUTPUT_DIR / "taps.parquet")
-    plot_layout(problem, layout, heldout)
+
+    folder = selection_dir(problem.target_names)
+    taps.write_parquet(folder / "taps.parquet")
+    taps.write_csv(folder / "taps.csv")
+    atomic_write_text(folder / "summary.json", json.dumps({
+        "targets": list(problem.target_names),
+        "known": list(problem.known_names),
+        "n_runs": problem.runs.height,
+        "n_candidates": problem.candidates.height,
+        "groups": {group: layout.groups.count(group) for group in GROUP_COLOURS},
+        "folds": FOLDS,
+        "cross_validated_rms_error_over_std": errors,
+    }, indent=2))
+    plot_layout(problem, layout, folder / "tap_selection.png", heldout, show)
+    print(f"saved {folder}")
+    return folder
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Choose a tap layout on the CFD runs and save it in a new folder of "
+                                                 f"{OUTPUT_DIR}, named after the targets.")
+    parser.add_argument("--targets", nargs="+", default=list(TARGETS),
+                        help=f"runs.parquet coefficients the layout is chosen for (default: {' '.join(TARGETS)})")
+    parser.add_argument("--show", action="store_true", help="also open the figure")
+    args = parser.parse_args()
+    main(tuple(args.targets), args.show)

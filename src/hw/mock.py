@@ -41,8 +41,8 @@ class MockTunnelParams(BaseModel):
     turbulence_deg: float = 2.0  # rms gust angle [deg] of the flow
     roll_turbulence_deg: float = 1.0  # rms of the antisymmetric gust [deg] (one wing up, the other down)
     watchdog_s: float = 0.1  # no command for this long -> surfaces to neutral (see TunnelIO: the watchdog)
-    # The simulated tunnel's operating point, which the DAQ reports with every sample. It can drift slowly
-    # (a sine of the given amplitude and period), as the real tunnel's speed and the rig's pitch do while running.
+    # The simulated tunnel's operating point, which it gives with every read. It can drift slowly (a sine of the
+    # given amplitude and period), as the real tunnel's speed and the model's pitch do while running.
     q_pa: float = 500.0  # dynamic pressure [Pa]
     alpha_deg: float = 8.0  # angle of attack [deg]
     q_drift_pa: float = 0.0
@@ -170,7 +170,10 @@ class MockTunnelIO:
             -qs * rig.span * c_yaw,  # Mz: C_n = -Mz / (q S b)
         ], dim=-1)
         loads = loads + p.load_noise_n * torch.randn(m, 6, generator=self.rng)
-        return SensorBlock(t=t, taps=taps, loads=loads, q=q, alpha=attitude)
+        # What the tunnel reports now: its operating point at the time of the read.
+        now = math.sin(2.0 * math.pi * self.t / p.drift_period_s)
+        return SensorBlock(t=t, taps=taps, loads=loads, q=p.q_pa + p.q_drift_pa * now,
+                           alpha=p.alpha_deg + p.alpha_drift_deg * now)
 
     def write_surfaces(self, deg: Tensor) -> None:
         self._advance_to_now()  # samples before now used the old command

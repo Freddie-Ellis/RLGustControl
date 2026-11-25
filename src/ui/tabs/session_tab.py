@@ -3,10 +3,12 @@
 Top: what the session runs, then the health of its three parts: the rig (safety trips, missed control ticks, DAQ
 samples per tick, how often the safety layer overrode the policy), the learner (alive?, backlog, replay buffer) and
 the link to the HPC.
-Left, one point per episode (x = episode): return (a red cross marks an episode a safety trip ended), Cm rms of the
-eval episodes against the neutral-surface baseline episodes, control loop timing, and which
-weight version the actor used.
-Right: the latest episode in detail (Cm over time, every tap pressure and surface command as heatmaps) and the learner's metrics.
+Left, one point per episode (x = episode): return (a red cross marks an episode a safety trip ended), how far a
+tracked load stayed from its target (rms) in the eval episodes against the neutral-surface baseline episodes, control
+loop timing, and which weight version the actor used.
+Right: the latest episode in detail: replayed on the 3D wing (surfaces moving, taps coloured by Cp), every tracked
+load against its target over time, with a cursor at the wing's frame; then the learner's
+metrics.
 Everything comes from files the actor and learner already write, so it works for a session on another machine too.
 With the learner on the HPC, "Launch sync" mirrors the folder with the HPC's copy (see src/ml/distributed/sync.py).
 A learner, actor or sync launched from here each get a live console window.
@@ -17,7 +19,7 @@ from pathlib import Path
 
 import numpy as np
 import pyqtgraph as pg
-from qtpy.QtCore import QRectF, Qt, QTimer
+from qtpy.QtCore import Qt, QTimer
 from qtpy.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -44,6 +46,7 @@ from src.ml.distributed.files import (
 )
 from src.ml.distributed.session import EpisodeKind, EpisodeSummary, SessionReader
 from src.ml.run_config import RunConfig
+from src.ui.tabs.replay_panel import ReplayPanel
 from src.ui.tabs.targets_dialog import TargetsDialog
 from src.ui.utils.dynamic_vb import DynamicViewBox
 from src.ui.utils.logger import RED, Readout, TelemetryConsole
@@ -57,7 +60,9 @@ KIND_STYLE: dict[str, tuple[tuple[int, int, int], int]] = {  # colour, marker si
     "baseline": ((235, 235, 235), 7),
 }
 TRIP_COLOUR = (255, 80, 80)
-CM_KINDS: tuple[EpisodeKind, ...] = ("train", "eval", "baseline")  # drawn on the Cm rms panel
+ERROR_KINDS: tuple[EpisodeKind, ...] = ("train", "eval", "baseline")  # drawn on the tracking error panel
+LOAD_COLOURS: dict[str, tuple[int, int, int]] = {"C_L": (80, 170, 240), "C_m": (255, 190, 60), "C_l": (120, 220, 120)}
+CM_ONLY = "|C_m|"  # the error panel's choice for an env that tracks nothing: Cm against zero
 GOOD, BAD, IDLE = "#4caf50", "#e57373", "#9e9e9e"
 NO_CONFIG = "choose…"
 
@@ -147,12 +152,12 @@ class SessionTab(QWidget):
         self.episode_plots = pg.GraphicsLayoutWidget()
         self.p_ret = self._plot(self.episode_plots, 0, "return")
         self.p_ret.addLegend(offset=(-10, 10))
-        self.p_cm_rms = self._plot(self.episode_plots, 1, "Cm rms")
-        self.p_cm_rms.addLegend(offset=(-10, 10))
+        self.p_err = self._plot(self.episode_plots, 1, "error rms")
+        self.p_err.addLegend(offset=(-10, 10))
         self.p_dt = self._plot(self.episode_plots, 2, "loop period [ms]")
         self.p_ver = self._plot(self.episode_plots, 3, "weights version")
         self.p_ver.setLabel("bottom", "episode")
-        for p in (self.p_cm_rms, self.p_dt, self.p_ver):
+        for p in (self.p_err, self.p_dt, self.p_ver):
             p.setXLink(self.p_ret)
         self.ret_items = {
             kind: self.p_ret.plot([], [], pen=None, symbol="o", symbolSize=size, symbolPen=None,
@@ -161,16 +166,20 @@ class SessionTab(QWidget):
         }
         self.trip_marks = self.p_ret.plot([], [], pen=None, symbol="x", symbolSize=12, symbolBrush=None,
                                           symbolPen=pg.mkPen(TRIP_COLOUR, width=2), name="safety trip")
-        # Cm rms: training episodes as faint points; eval (the policy) as a solid line and baseline (surfaces at
-        # neutral) as a dashed one. Eval below baseline = the policy is suppressing Cm.
-        self.cm_items: dict[EpisodeKind, pg.PlotDataItem] = {
-            "train": self.p_cm_rms.plot([], [], pen=None, symbol="o", symbolSize=3, symbolPen=None,
-                                        symbolBrush=pg.mkBrush(80, 170, 240, 90), name="train"),
-            "eval": self.p_cm_rms.plot(
+        # Tracking error rms of the load chosen: training episodes as faint points; eval (the policy) as a solid line
+        # and baseline (surfaces at neutral) as a dashed one. Eval below baseline = the policy holds the target better
+        # than doing nothing.
+        self.error_load = QComboBox()
+        self.error_load.setToolTip("The load whose distance from its target (rms over the episode) is plotted")
+        self.error_load.currentTextChanged.connect(lambda _: self.reader is not None and self._draw_errors())
+        self.error_items: dict[EpisodeKind, pg.PlotDataItem] = {
+            "train": self.p_err.plot([], [], pen=None, symbol="o", symbolSize=3, symbolPen=None,
+                                     symbolBrush=pg.mkBrush(80, 170, 240, 90), name="train"),
+            "eval": self.p_err.plot(
                 [], [], pen=pg.mkPen(KIND_STYLE["eval"][0], width=1.5), symbol="o", symbolSize=7, symbolPen=None,
                 symbolBrush=pg.mkBrush(*KIND_STYLE["eval"][0]), name="eval",
             ),
-            "baseline": self.p_cm_rms.plot(
+            "baseline": self.p_err.plot(
                 [], [], pen=pg.mkPen(KIND_STYLE["baseline"][0], width=1.5, style=Qt.PenStyle.DashLine), symbol="s",
                 symbolSize=7, symbolPen=None, symbolBrush=pg.mkBrush(*KIND_STYLE["baseline"][0]), name="baseline",
             ),
@@ -189,35 +198,21 @@ class SessionTab(QWidget):
 
         # --- right: latest episode + learner ---
         self.latest_title = QLabel("Latest episode: -")
+        # The wing (built on the first episode: it loads the CAD) shows the taps and the surface commands; the tracked
+        # loads are plotted under it, with a cursor at the wing's frame.
+        self.wing = ReplayPanel(self)
         self.detail_plots = pg.GraphicsLayoutWidget()
-        self.p_cm = self._plot(self.detail_plots, 0, "Cm")
-        self.p_taps = self.detail_plots.addPlot(row=1, col=0)
-        self.p_taps.setLabel("left", "tap")
-        self.p_taps.setXLink(self.p_cm)
-        self.p_act = self.detail_plots.addPlot(row=2, col=0)
-        self.p_act.setLabel("left", "surface")
-        self.p_act.setLabel("bottom", "time [s]")
-        self.p_act.setXLink(self.p_cm)
-        self.cm_curve = self.p_cm.plot([], [], pen=pg.mkPen((80, 170, 240), width=1.5))
-        self.p_cm.addItem(pg.InfiniteLine(angle=0, pos=0.0, pen=pg.mkPen("w", width=1)), ignoreBounds=True)
-        self.trip_lines = [
-            pg.InfiniteLine(angle=0, pen=pg.mkPen((229, 115, 115), style=Qt.PenStyle.DashLine)) for _ in range(2)
-        ]
-        for line in self.trip_lines:
-            self.p_cm.addItem(line, ignoreBounds=True)  # else +-cm_trip squashes the Cm trace
-            line.hide()
-        self.act_image = pg.ImageItem()
-        self.p_act.addItem(self.act_image)
-        colormap = pg.colormap.get("CET-D1")
-        self.act_bar = pg.ColorBarItem(values=(-1.0, 1.0), colorMap=colormap, interactive=False, label="command")
-        self.act_bar.setImageItem(self.act_image, insert_in=self.p_act)
-        self.taps_image = pg.ImageItem()
-        self.p_taps.addItem(self.taps_image)
-        self.taps_bar = pg.ColorBarItem(values=(-1.0, 1.0), colorMap=colormap, interactive=False, label="Cp")
-        self.taps_bar.setImageItem(self.taps_image, insert_in=self.p_taps)
+        self.p_loads = self._plot(self.detail_plots, 0, "coefficient")
+        self.p_loads.setLabel("bottom", "time [s]")
+        self.p_loads.addLegend(offset=(-10, 10))
+        self.cursor = pg.InfiniteLine(angle=90, pen=pg.mkPen("w", width=1))
+        self.p_loads.addItem(self.cursor, ignoreBounds=True)
+        self.wing.time_shown.connect(self.cursor.setValue)
         self.taps_mode = QComboBox()
         self.taps_mode.addItems(["fluctuation", "absolute"])
-        self.taps_mode.currentTextChanged.connect(lambda _: self.reader is not None and self._draw_latest())
+        self.taps_mode.setToolTip("fluctuation: each tap's Cp minus its episode mean, so the gusts show\n"
+                                  "absolute: Cp as measured")
+        self.taps_mode.currentTextChanged.connect(lambda mode: self.wing.set_taps_mode(mode))
         detail_row = QHBoxLayout()
         self.command_mode = QComboBox()
         self.command_mode.addItems(["applied", "requested"])
@@ -225,7 +220,7 @@ class SessionTab(QWidget):
             "applied: what the surfaces were sent, after the safety layer's rate limit and clamp\n"
             "requested: what the policy asked for"
         )
-        self.command_mode.currentTextChanged.connect(lambda _: self.reader is not None and self._draw_latest())
+        self.command_mode.currentTextChanged.connect(lambda mode: self.wing.set_command_mode(mode))
         detail_row.addWidget(self.latest_title, 1)
         detail_row.addWidget(QLabel("Pressures"))
         detail_row.addWidget(self.taps_mode)
@@ -242,16 +237,33 @@ class SessionTab(QWidget):
         learner_row.addWidget(QLabel("Learner metric"))
         learner_row.addWidget(self.learner_metric, 1)
 
+        learner_box = QWidget()
+        learner_layout = QVBoxLayout(learner_box)
+        learner_layout.setContentsMargins(0, 0, 0, 0)
+        learner_layout.addLayout(learner_row)
+        learner_layout.addWidget(self.p_learn, 1)
+        right_split = QSplitter(Qt.Orientation.Vertical)
+        for w in (self.wing, self.detail_plots, learner_box):
+            right_split.addWidget(w)
+        right_split.setSizes([450, 300, 180])
         right = QWidget()
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.addLayout(detail_row)
-        right_layout.addWidget(self.detail_plots, 4)
-        right_layout.addLayout(learner_row)
-        right_layout.addWidget(self.p_learn, 2)
+        right_layout.addWidget(right_split, 1)
+
+        error_row = QHBoxLayout()
+        error_row.addWidget(QLabel("Error rms of"))
+        error_row.addWidget(self.error_load)
+        error_row.addStretch()
+        left = QWidget()
+        left_layout = QVBoxLayout(left)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.addLayout(error_row)
+        left_layout.addWidget(self.episode_plots, 1)
 
         split = QSplitter()
-        split.addWidget(self.episode_plots)
+        split.addWidget(left)
         split.addWidget(right)
         split.setSizes([700, 600])
 
@@ -458,6 +470,7 @@ class SessionTab(QWidget):
         A running sync passes the STOP on, so this also stops a learner on the HPC."""
         running = [c for c in self.consoles if c.is_running()]  # sync last: it carries the STOP to the HPC
         if not running:
+            self.wing.close_scene()
             return True
         names = " and ".join(c.name.lower() for c in running)
         answer = QMessageBox.question(self, "Session running", f"Stop the {names} and close?")
@@ -469,6 +482,7 @@ class SessionTab(QWidget):
         for console in running:
             if not console.wait(STOP_WAIT_MS):
                 console.kill()
+        self.wing.close_scene()
         return True
 
     def _watch(self) -> None:
@@ -600,10 +614,25 @@ class SessionTab(QWidget):
             text = f"Sync: reached the HPC {r.sync_age_s() or 0.0:.0f} s ago" + ("" if running else " (not running)")
             self.sync_health.setText(_dot(GOOD if running else IDLE, text))
 
-    def _draw_cm_rms(self, eps: list[EpisodeSummary]) -> None:
-        for kind in CM_KINDS:
-            pts = [e for e in eps if e.kind == kind and e.cm_rms is not None]
-            self.cm_items[kind].setData([e.episode_id for e in pts], [e.cm_rms for e in pts])
+    def _draw_errors(self) -> None:
+        """Each episode's rms distance of the chosen load from its target (or |Cm| if nothing is tracked)."""
+        r = self.reader
+        assert r is not None
+        names = list(r.tracking()) or [CM_ONLY]
+        if [self.error_load.itemText(i) for i in range(self.error_load.count())] != names:
+            self.error_load.blockSignals(True)
+            self.error_load.clear()
+            self.error_load.addItems(names)
+            self.error_load.blockSignals(False)
+        name = self.error_load.currentText()
+        self.p_err.setLabel("left", "Cm rms" if name == CM_ONLY else f"{name} error rms")
+
+        def value(e: EpisodeSummary) -> float | None:
+            return e.cm_rms if name == CM_ONLY else e.error_rms.get(name)
+
+        for kind in ERROR_KINDS:
+            pts = [(e.episode_id, v) for e in r.episodes if e.kind == kind and (v := value(e)) is not None]
+            self.error_items[kind].setData([p[0] for p in pts], [p[1] for p in pts])
 
     def _draw_episodes(self) -> None:
         r = self.reader
@@ -614,7 +643,7 @@ class SessionTab(QWidget):
             item.setData([e.episode_id for e in pts], [e.ret for e in pts])
         tripped = [e for e in eps if e.terminated]
         self.trip_marks.setData([e.episode_id for e in tripped], [e.ret for e in tripped])
-        self._draw_cm_rms(eps)
+        self._draw_errors()
         ids = np.array([e.episode_id for e in eps], dtype=float)
         self.dt_mean.setData(ids, [1000 * e.dt_mean for e in eps])
         self.dt_max.setData(ids, [1000 * e.dt_max for e in eps])
@@ -637,41 +666,39 @@ class SessionTab(QWidget):
         parts = [f"Latest episode #{d.meta.episode_id}", summary.kind, f"weights v{d.meta.policy_version}"]
         if summary.terminated:
             parts.append(f"SAFETY TRIP at step {d.meta.n_steps}")
-        if summary.cm_rms is not None:
+        parts += [f"{name} error rms {v:.4f}" for name, v in summary.error_rms.items()]
+        if not summary.error_rms and summary.cm_rms is not None:
             parts.append(f"Cm rms {summary.cm_rms:.4f}")
         parts.append(f"return {summary.ret:.1f}")
         self.latest_title.setText(" · ".join(parts))
 
-        if d.cm is not None:
-            self.cm_curve.setData(d.t.numpy(), d.cm.numpy())
-        trip = r.cm_trip
-        for line, sign in zip(self.trip_lines, (1.0, -1.0)):
-            line.setVisible(trip is not None)
-            if trip is not None:
-                line.setValue(sign * trip)
+        self._draw_loads()
+        self.wing.show_episode(d)
 
-        applied = self.command_mode.currentText() == "applied" and d.applied is not None
-        # [T, surfaces]; ImageItem's first axis is x, so time runs along x
-        act = (d.applied if applied and d.applied is not None else d.act).numpy()
-        self.act_image.setImage(act, levels=(-1.0, 1.0), autoLevels=False)
-        dt = float(d.t[0]) if len(d.t) else 1.0
-        self.act_image.setRect(QRectF(0.0, 0.0, act.shape[0] * dt, act.shape[1]))
-        self.p_act.setLimits(yMin=0, yMax=act.shape[1])
-
-        self.p_taps.setVisible(d.taps is not None)
-        if d.taps is not None:
-            taps = d.taps.numpy()  # [T, n_taps] Cp
-            if self.taps_mode.currentText() == "fluctuation":
-                # Each tap minus its episode mean: the steady Cp distribution would otherwise hide the gusts.
-                taps = taps - taps.mean(axis=0, keepdims=True)
-                span = float(np.percentile(np.abs(taps), 99)) or 1.0  # robust to one noisy spike
-                levels = (-span, span)
-            else:
-                levels = (float(taps.min()), float(taps.max()))
-            self.taps_image.setImage(taps, levels=levels, autoLevels=False)
-            self.taps_bar.setLevels(levels)
-            self.taps_image.setRect(QRectF(0.0, 0.0, taps.shape[0] * dt, taps.shape[1]))
-            self.p_taps.setLimits(yMin=0, yMax=taps.shape[1])
+    def _draw_loads(self) -> None:
+        """Every tracked load of the latest episode (solid) against its target (dashed). An env that tracks nothing
+        shows Cm against zero, with the safety layer's trip level."""
+        r = self.reader
+        assert r is not None and r.latest is not None
+        d = r.latest
+        self.p_loads.clear()
+        if self.p_loads.legend is not None:
+            self.p_loads.legend.clear()
+        self.p_loads.addItem(self.cursor, ignoreBounds=True)
+        t = d.t.numpy()
+        for name, load in d.loads.items():
+            colour = LOAD_COLOURS.get(name, (200, 200, 200))
+            self.p_loads.plot(t, load.numpy(), pen=pg.mkPen(colour, width=1.5), name=name)
+            if name in d.targets:
+                self.p_loads.plot(t, d.targets[name].numpy(), name=f"{name} target",
+                                  pen=pg.mkPen(colour, width=1.5, style=Qt.PenStyle.DashLine))
+        if not d.loads and d.cm is not None:
+            self.p_loads.plot(t, d.cm.numpy(), pen=pg.mkPen(LOAD_COLOURS["C_m"], width=1.5), name="C_m")
+            self.p_loads.addItem(pg.InfiniteLine(angle=0, pos=0.0, pen=pg.mkPen("w", width=1)), ignoreBounds=True)
+            if (trip := r.cm_trip) is not None:
+                for sign in (1.0, -1.0):  # ignoreBounds, else +-cm_trip squashes the Cm trace
+                    self.p_loads.addItem(pg.InfiniteLine(angle=0, pos=sign * trip, pen=pg.mkPen(
+                        (229, 115, 115), style=Qt.PenStyle.DashLine)), ignoreBounds=True)
 
     def _draw_learner(self) -> None:
         if self.reader is None:

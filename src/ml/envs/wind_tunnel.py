@@ -11,8 +11,8 @@ So each call lasts exactly `spec.dt` of real time and one transition = "what the
 period with this command applied". The actor's loop is identical in simulation and in the tunnel. Only this env
 knows about time.
 
-    obs        = [targets of the tracked loads (normalised), angle of attack and dynamic pressure (normalised),
-                  ~50 taps as Cp, surface commands now in effect]                 what the deployed actor has
+    obs        = [targets of the tracked loads (normalised), ~50 taps as Cp, surface commands now in effect]
+                 what the deployed actor has
     action     = one value in [-1, 1] per surface, mapped onto its travel (CONFIG.rig)
     privileged = [C_L, C_m, C_l (each over LOAD_SCALES)]                  critic only (the load cell)
 
@@ -27,12 +27,12 @@ To choose them: `eval_targets` in the config for evaluation and baseline episode
 
 The turbulence is whatever the tunnel gives: the env neither sets it nor is told its level.
 
-The dynamic pressure q and the angle of attack change as the tunnel runs, so both are measured with every DAQ sample
-and averaged per tick like everything else. The loads are made coefficients with that tick's q and alpha, and the
-taps are given to the policy as Cp = p / q (as the CFD and the autoencoder have them), so a change of tunnel speed
-does not change what it sees. The policy is also given alpha and q themselves: the wing's response depends on them.
-A q below MIN_Q_PA (tunnel stopped or the pitot blocked) trips the safety layer, since no coefficient means anything
-then.
+The dynamic pressure q and the angle of attack change as the tunnel runs; the wind tunnel gives both with every read
+(they are not worked out from the rig's readings). They are only used to non-dimensionalise: the loads become coefficients
+with that tick's q and alpha, and the taps become Cp = p / q (as the CFD and the autoencoder have them), so a change
+of tunnel speed does not change what the policy sees. Neither is an input to any network (actor, critic or learner):
+a real UAV has no such sensors. A q below MIN_Q_PA (tunnel stopped or the pitot blocked) trips the safety layer,
+since no coefficient means anything then.
 
 A safety trip ends the episode (`terminated`): the surfaces go to neutral and stay there until the next reset.
 """
@@ -67,9 +67,6 @@ type LoadName = Literal["C_L", "C_m", "C_l"]
 LOADS: tuple[LoadName, ...] = ("C_L", "C_m", "C_l")
 # Typical size of each load, which the critic's copies are divided by so its inputs are O(1) like the taps.
 LOAD_SCALES: dict[LoadName, float] = {"C_L": 0.4, "C_m": 0.03, "C_l": 0.02}  # TODO: from baseline episodes
-# The operating point in the observation: alpha and q divided by these, so they are O(1) like the rest.
-ALPHA_SCALE_DEG: float = 10.0
-Q_SCALE_PA: float = 500.0  # TODO: the tunnel's usual dynamic pressure
 MIN_Q_PA: float = 50.0  # TODO: set from the tunnel's lowest running speed. Below it the reading is a fault: trips
 
 
@@ -188,7 +185,7 @@ def check_targets(targets: Mapping[str, float], tracking: Mapping[str, LoadTarge
 
 def load_coefficients(loads: Tensor, q: Tensor, alpha_deg: Tensor, rig: RigParams) -> Tensor:
     """The six load cell readings [..., 6] (Fx, Fy, Fz [N], Mx, My, Mz [N m] in the model frame: x aft, y starboard,
-    z up), at dynamic pressure q [...] [Pa] and angle of attack alpha_deg [...] -> the coefficients in COEFFICIENTS
+    z up), at the tunnel's dynamic pressure q [...] [Pa] and angle of attack alpha_deg [...] -> the coefficients in COEFFICIENTS
     [..., 6], as src/cfd/solve_report.py defines them. Lift and drag are across and along the freestream at that
     angle of attack; positive roll is right wing down, yaw nose right."""
     fx, fy, fz, mx, my, mz = loads.unbind(-1)
@@ -215,8 +212,8 @@ class WindTunnelEnv(Env):
         self.params = params
         n_taps, n_surfaces = params.rig.n_taps, params.rig.n_surfaces
         self.tracked = params.tracked
-        # [targets, alpha, q, taps, commands]: the session reads taps and commands off the end
-        self.obs_dim = len(self.tracked) + 2 + n_taps + n_surfaces
+        # [targets, taps, commands]: the session reads taps and commands off the end
+        self.obs_dim = len(self.tracked) + n_taps + n_surfaces
         self.act_dim = n_surfaces
         targets = [params.tracking[name] for name in self.tracked]
         self._tracked_cols = torch.tensor([LOADS.index(name) for name in self.tracked])
@@ -236,8 +233,9 @@ class WindTunnelEnv(Env):
         self.safety = SafetyLayer(params.safety, n_surfaces, spec.dt, neutral=params.rig.neutral_action)
 
         self.taps = torch.zeros(n_taps)  # Cp of the last tick
-        self.q = torch.tensor(Q_SCALE_PA)  # dynamic pressure [Pa] of the last tick
-        self.alpha = torch.tensor(0.0)  # angle of attack [deg] of the last tick
+        # Dynamic pressure [Pa] and angle of attack [deg] of the last tick: for non-dimensionalising only, never observed
+        self.q = torch.tensor(0.0)
+        self.alpha = torch.tensor(0.0)
         self.coeffs = torch.zeros(len(LOADS))  # LOADS of the last tick
         self.target = self._low.clone()  # of the tracked loads, now
         self._pinned: dict[int, float] = {}  # index in `tracked` -> target set by set_targets, kept over redraws
@@ -271,7 +269,8 @@ class WindTunnelEnv(Env):
         self.samples = block.t.numel()
         if self.samples == 0:
             return True
-        taps, loads, q, alpha = block.taps.mean(0), block.loads.mean(0), block.q.mean(), block.alpha.mean()
+        taps, loads = block.taps.mean(0), block.loads.mean(0)
+        q, alpha = torch.tensor(block.q), torch.tensor(block.alpha)  # as the tunnel gives them
         readings = torch.cat([taps, loads, q.reshape(1), alpha.reshape(1)])
         if not torch.isfinite(readings).all() or q < MIN_Q_PA:
             return False
@@ -315,8 +314,7 @@ class WindTunnelEnv(Env):
         # Each target as where it sits in its range, -1..1 (0 for a fixed target), so it is O(1) whatever the load.
         half = (self._high - self._low) / 2
         target = torch.where(half > 0, (self.target - (self._low + half)) / half.clamp_min(1e-12), 0.0)
-        flow = torch.stack([self.alpha / ALPHA_SCALE_DEG, self.q / Q_SCALE_PA])
-        return torch.cat([target, flow, self.taps, self.u]).unsqueeze(0)
+        return torch.cat([target, self.taps, self.u]).unsqueeze(0)
 
     def reset(self) -> Tensor:
         if self.io is None:

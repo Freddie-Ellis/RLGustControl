@@ -2,8 +2,8 @@
 
 `WindTunnelEnv` only talks to the rig through `TunnelIO`, so the same env runs against `MockTunnelIO` on a laptop
 and against the real DAQ and servos in the tunnel. Units are physical here (Pa, N, N m, degrees); the env turns them
-into normalised observations and the load coefficients, with the dynamic pressure and angle of attack measured
-alongside them, since neither is constant while the tunnel runs.
+into normalised observations and the load coefficients, with the dynamic pressure and angle of attack the wind tunnel
+gives with each read, since neither is constant while the tunnel runs.
 """
 
 from dataclasses import dataclass
@@ -21,8 +21,10 @@ class SensorBlock:
     t: Tensor  # [M] seconds since the IO was opened
     taps: Tensor  # [M, n_taps] surface pressures [Pa], relative to the freestream static pressure
     loads: Tensor  # [M, 6] 6-axis load cell: Fx, Fy, Fz [N], Mx, My, Mz [N m]
-    q: Tensor  # [M] freestream dynamic pressure [Pa] (e.g. the tunnel's pitot-static): it changes as the tunnel runs
-    alpha: Tensor  # [M] the wing's angle of attack [deg] on the rig, from its pitch sensor: it changes as the rig moves
+    # The operating point as the wind tunnel gives it (not worked out from the readings above), at the time of the
+    # read. Both change as the tunnel runs.
+    q: float  # freestream dynamic pressure [Pa]
+    alpha: float  # the wing's angle of attack [deg]
 
 
 class TunnelIO(Protocol):

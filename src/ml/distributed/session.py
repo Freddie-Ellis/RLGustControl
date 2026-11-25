@@ -53,6 +53,7 @@ class EpisodeSummary:
     version: int  # weights the actor used (-1 = none yet)
     ret: float  # return per env
     cm_rms: float | None  # None if the env has no Cm
+    error_rms: dict[str, float]  # rms of each tracked load's distance from its target, e.g. "C_L"; {} if none
     dt_mean: float  # control period achieved [s]
     dt_max: float
     n_transitions: int
@@ -69,6 +70,10 @@ class EpisodeDetail:
     taps: Tensor | None  # [T, n_taps] pressures as Cp (p / that tick's q), None if the env has no taps
     act: Tensor  # [T, act_dim] what the policy asked for, in [-1, 1]
     applied: Tensor | None  # [T, act_dim] what the surfaces were sent after the safety layer; None if not known
+    deflection_deg: Tensor | None  # [T, act_dim] `applied` as each surface's deflection [deg] (tunnel envs)
+    requested_deg: Tensor | None  # [T, act_dim] `act` as each surface's deflection [deg] (tunnel envs)
+    loads: dict[str, Tensor]  # each tracked load as measured [T], e.g. "C_L"; {} if the env tracks none
+    targets: dict[str, Tensor]  # the target each tracked load was held to [T]
 
 
 @dataclass(frozen=True)
@@ -109,7 +114,7 @@ class SessionReader:
         self.latest: EpisodeDetail | None = None
         self._seen: set[str] = set()
         self._cm_col: int | None = None
-        # Tunnel obs frame = [targets, alpha, q, taps as Cp, commands in effect], so taps and commands are its last
+        # Tunnel obs frame = [targets, taps as Cp, commands in effect], so taps and commands are its last
         # values whatever is tracked; with history, the newest frame is last.
         self._n_taps = 0
         self._n_surfaces = 0
@@ -156,6 +161,9 @@ class SessionReader:
     def _summarise(self, meta: EpisodeMetaData, frame: pl.DataFrame) -> EpisodeSummary:
         tr = frame_to_transitions(frame)
         cm = self._cm(frame, tr["next_priv"])
+        extras = frame_extras(frame)
+        error_rms = {name: float(extras[f"{name}_error"].pow(2).mean().sqrt())
+                     for name in self.tracking() if f"{name}_error" in extras}
         kind: EpisodeKind = (
             "baseline" if meta.baseline else "eval" if meta.evaluate else "warmup" if meta.policy_version < 0 else "train"
         )
@@ -165,6 +173,7 @@ class SessionReader:
             version=meta.policy_version,
             ret=float(tr["rew"].sum()) / meta.n_envs,
             cm_rms=None if cm is None else float(cm.pow(2).mean().sqrt()),
+            error_rms=error_rms,
             dt_mean=meta.loop_dt_mean,
             dt_max=meta.loop_dt_max,
             n_transitions=frame.height,
@@ -187,7 +196,16 @@ class SessionReader:
             newest = tr["next_obs"][::n, -(self._n_taps + self._n_surfaces):]
             taps = newest[:, : self._n_taps]
             applied = newest[:, self._n_taps:]
-        return EpisodeDetail(meta=meta, t=t, cm=None if cm is None else cm[::n], taps=taps, act=act, applied=applied)
+        params = self.cfg.env.params if self.cfg else None
+        deflection = (params.rig.to_deg(applied) if isinstance(params, WindTunnelParams) and applied is not None
+                      else None)
+        requested = params.rig.to_deg(act) if isinstance(params, WindTunnelParams) else None
+        # The env records each tracked load and its error after every step; the target is the difference.
+        extras = frame_extras(frame)
+        loads = {name: extras[name][::n] for name in self.tracking() if name in extras}
+        targets = {name: loads[name] - extras[f"{name}_error"][::n] for name in loads if f"{name}_error" in extras}
+        return EpisodeDetail(meta=meta, t=t, cm=None if cm is None else cm[::n], taps=taps, act=act, applied=applied,
+                             deflection_deg=deflection, requested_deg=requested, loads=loads, targets=targets)
 
     # ----- session facts -----
     @property
